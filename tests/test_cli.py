@@ -175,6 +175,83 @@ def test_check_missing_pin_exits_with_code_3(tmp_path: Path) -> None:
     assert result.exit_code == 3
 
 
+def test_pin_writes_lighting_and_aruco_files(tmp_path: Path) -> None:
+    img = _write_image(tmp_path / "ref.png")
+    pin_root = tmp_path / "pins"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "pin", "--name", "p",
+            "--camera-driver", "file", "--camera", str(img),
+            "--root", str(pin_root),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    pin_dir = pin_root / "p"
+    assert (pin_dir / "lighting.json").exists()
+    assert (pin_dir / "pose" / "aruco.json").exists()
+
+
+def test_check_flags_lighting_shift_when_brightness_changes(tmp_path: Path) -> None:
+    pinned_img = _write_image(tmp_path / "dark.png", color=(20, 20, 20))
+    drifted_img = _write_image(tmp_path / "bright.png", color=(220, 220, 220))
+    pin_root = tmp_path / "pins"
+    runner = CliRunner()
+
+    pin_result = runner.invoke(
+        cli,
+        [
+            "pin", "--name", "p",
+            "--camera-driver", "file", "--camera", str(pinned_img),
+            "--root", str(pin_root),
+        ],
+    )
+    assert pin_result.exit_code == 0, pin_result.output
+
+    check_result = runner.invoke(
+        cli,
+        [
+            "check", "--against", "p",
+            "--camera-driver", "file", "--camera", str(drifted_img),
+            "--root", str(pin_root),
+            "--json",
+        ],
+    )
+    # Warning exit code (drift detected but not critical).
+    assert check_result.exit_code in (1, 2), check_result.output
+    payload = json.loads(check_result.output.strip())
+    assert "lighting_shift" in payload["flags"]
+    assert payload["status"] in ("warning", "failed")
+    lighting_findings = [f for f in payload["findings"] if f["component"] == "lighting"]
+    assert len(lighting_findings) == 1
+    assert lighting_findings[0]["evidence"]["mean_luminance_delta"] > 100
+
+
+def test_check_passes_on_identical_frame(tmp_path: Path) -> None:
+    img = _write_image(tmp_path / "ref.png")
+    pin_root = tmp_path / "pins"
+    runner = CliRunner()
+    assert runner.invoke(
+        cli,
+        ["pin", "--name", "p",
+         "--camera-driver", "file", "--camera", str(img),
+         "--root", str(pin_root)],
+    ).exit_code == 0
+
+    result = runner.invoke(
+        cli,
+        ["check", "--against", "p",
+         "--camera-driver", "file", "--camera", str(img),
+         "--root", str(pin_root),
+         "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output.strip())
+    assert payload["status"] == "passed"
+    assert payload["flags"] == []
+    assert payload["findings"] == []
+
+
 def test_check_pin_hash_matches_filesystem(tmp_path: Path) -> None:
     img = _write_image(tmp_path / "ref.png")
     pin_root = tmp_path / "pins"
