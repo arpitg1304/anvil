@@ -1,0 +1,291 @@
+================================================================
+ANVIL — CLAUDE CODE WORKING INSTRUCTIONS
+================================================================
+
+You are helping build Anvil, a scene-consistency sentinel for robotics
+data collection. The full project specification is in `anvil_plan.md` —
+read it end to end before doing anything else, and treat it as the
+source of truth. This file is *how* to work on Anvil; the plan is
+*what* Anvil is.
+
+----------------------------------------------------------------
+CONTEXT
+----------------------------------------------------------------
+
+- Owner is a robotics researcher with a basement lab (ceiling-mounted
+  camera, ML workstation). Has an existing sibling project named Forge
+  (https://github.com/arpitg1304/forge, 99 stars) that handles
+  post-collection dataset tooling. Anvil handles pre-collection scene
+  verification. The two are designed to be complementary, not merged.
+
+- 3-week MVP timeline, one person. Open-source target. Must be
+  installable in 5 minutes on a laptop with a webcam for the README
+  demo path, and scale up to the full GPU stack for serious users.
+
+- Naming is final: GitHub `arpitg1304/anvil`, PyPI `anvil-robotics`,
+  CLI binary `anvil`, Python import `anvil`. Do not propose renames.
+
+----------------------------------------------------------------
+FIRST SESSION — DO THESE IN ORDER, NOTHING BEFORE
+----------------------------------------------------------------
+
+1. Read `anvil_plan.md` cover to cover. Confirm understanding to the
+   user before touching code. If anything in the plan is ambiguous
+   or contradictory, surface it now, not later.
+
+2. Ask the clarifying questions in the "WHAT TO ASK BEFORE CODING"
+   section below. Do not assume defaults for these.
+
+3. Scaffold the repo with the structure specified in "REPO LAYOUT".
+   Use `uv` for package management (`uv init`, `uv add ...`). No
+   poetry, no setup.py, no requirements.txt — only `pyproject.toml`
+   and `uv.lock`.
+
+4. Generate three files in this exact order, before any computer
+   vision or robot code:
+     a. `docs/metadata_schema.md` — lift directly from Section 8 of
+        the plan. This is the contract with Forge; it is law.
+     b. `src/anvil/schema.py` — Pydantic v2 models matching the
+        schema exactly. Use Literal types for enums (status,
+        severity, component, operator_action). Use Annotated +
+        Field for constraints (scores 0.0-1.0, etc).
+     c. `tests/test_schema.py` — round-trip tests: instantiate
+        each model with valid data, dump to JSON, reload, assert
+        equality. Also test that invalid data raises ValidationError.
+
+5. Run the test suite. Green tests on the schema before moving on.
+
+6. Stop and check in with the user. Show what was built. Get the
+   go-ahead before starting on Week 1 vision work.
+
+----------------------------------------------------------------
+WHAT TO ASK BEFORE CODING
+----------------------------------------------------------------
+
+Don't guess these. Ask one short message with all of them:
+
+1. Camera hardware: USB webcam (V4L2)? Intel RealSense? IP cam?
+   Something else? This determines the first driver to implement.
+   For MVP, implement ONLY the one the user actually has.
+
+2. Robot available for Week 1 Layer 0 testing: yes/no/which one?
+   If no robot, stub the LeRobot driver behind a `none` driver and
+   gate the joint-state check behind `robot.enabled: false`.
+
+3. GPU available during development: yes/no/which? Determines whether
+   Layer 3 (Qwen3-VL) gets tested live in Week 2 or stubbed.
+
+4. Python version target: 3.11 minimum is recommended (matches Forge).
+   Confirm.
+
+5. OS for dev and for production: Linux only is fine for v0.1; mac/win
+   support is post-MVP. Confirm.
+
+6. Should the v0.1 release include both a `pip install anvil-robotics`
+   path AND a `pip install anvil-robotics[full]` extras path (the
+   latter pulling DINOv3 / SAM 3 / VLM heavy deps)? Default: yes,
+   with the bare install supporting only the Layer 1 cascade.
+
+----------------------------------------------------------------
+NON-NEGOTIABLES (DON'T CHANGE WITHOUT EXPLICIT APPROVAL)
+----------------------------------------------------------------
+
+- The v0.1 schema in `docs/metadata_schema.md`. Forge code will be
+  written against it. Additive changes only after 1.0. If you find
+  a flaw, surface it and wait for approval — do not silently
+  "improve" it.
+
+- The flag vocabulary (9 flags in Section 8). Same rule.
+
+- The CLI verbs: `pin`, `check`, `guard`. No renaming, no new
+  top-level verbs in MVP. Subcommands underneath are fine.
+
+- The 3-layer cascade architecture. If a check naturally fits one
+  layer, put it there. Don't invent Layer 1.5.
+
+- The MVP scope. The "Explicitly OUT of MVP" list in Section 9 is
+  there to stop drift. If you think something belongs in MVP that
+  isn't there, surface it; don't just add it.
+
+----------------------------------------------------------------
+REPO LAYOUT
+----------------------------------------------------------------
+
+Match Forge's style (src layout, pyproject.toml only):
+
+anvil/
+├── src/
+│   └── anvil/
+│       ├── __init__.py
+│       ├── cli.py              # Click app, three subcommands
+│       ├── schema.py           # Pydantic v2 models
+│       ├── manifest.py         # pin/load/save
+│       ├── cameras/            # camera abstraction
+│       │   ├── base.py
+│       │   ├── webcam.py
+│       │   └── realsense.py    # only if user has one
+│       ├── layers/
+│       │   ├── layer0_robot.py
+│       │   ├── layer1_fast.py
+│       │   ├── layer2_structural.py
+│       │   └── layer3_agent.py
+│       ├── robots/
+│       │   ├── base.py
+│       │   ├── lerobot.py
+│       │   └── none.py
+│       ├── models/             # model loading wrappers
+│       │   ├── dinov3.py
+│       │   ├── sam3.py
+│       │   └── vlm.py
+│       ├── agent/
+│       │   ├── tools.py
+│       │   └── loop.py
+│       └── server/             # FastAPI + HTMX UI (Week 3)
+├── tests/
+├── docs/
+│   ├── metadata_schema.md
+│   ├── architecture.md
+│   └── quickstart.md
+├── examples/
+│   └── webcam_demo.ipynb
+├── pyproject.toml
+├── uv.lock
+├── README.md
+├── ROADMAP.md
+├── CHANGELOG.md
+├── LICENSE                     # MIT
+├── Makefile
+└── .gitignore
+
+----------------------------------------------------------------
+TOOLING DEFAULTS
+----------------------------------------------------------------
+
+- Package manager: uv (fast, modern, lockfile-native)
+- Lint + format: ruff (replaces black, isort, flake8)
+- Type check: mypy --strict on src/anvil/ (tests can be looser)
+- Testing: pytest, pytest-cov, pytest-asyncio
+- Pre-commit hooks: ruff, mypy, end-of-file-fixer
+- CLI framework: Click (multi-command with subcommands)
+- Terminal output: Rich (matches Forge's style — tables, panels)
+- Schemas: Pydantic v2 (Literal for enums, Annotated for constraints)
+- Web UI (Week 3): FastAPI + HTMX + Tailwind via CDN — no build step
+- VLM serving: Ollama as the default integration; provide a vLLM
+  config in docs but don't require it
+- Computer vision: OpenCV for classical, PyTorch for foundation
+  models, Ultralytics for SAM 3
+
+----------------------------------------------------------------
+WORKING STYLE
+----------------------------------------------------------------
+
+- Type-hint everything. No `Any` in src/ without a comment justifying
+  it. `from __future__ import annotations` at the top of every file.
+
+- Tests run after every meaningful change. If you generate >50 lines
+  of code without running tests, you're going too fast.
+
+- Commit-sized work units. Each session should end with a clean state
+  that could be committed. Use conventional commit prefixes
+  (feat:, fix:, refactor:, test:, docs:).
+
+- Match Forge's README aesthetic when writing user-facing docs:
+  ASCII banner at the top of README, concise tables of capabilities,
+  a Quick Start before everything else. The user has a style.
+
+- Imports: absolute imports inside `anvil`, never relative. One import
+  per line is fine; group stdlib / third-party / local with blank
+  lines between.
+
+- Errors: raise specific exceptions with actionable messages. Never
+  `raise Exception(...)`. Define a small `anvil.errors` module with
+  `AnvilError` base and a few subclasses (PinNotFound, ManifestVersionMismatch, etc).
+
+----------------------------------------------------------------
+SCOPE GUARDS
+----------------------------------------------------------------
+
+Things you will be tempted to build that are NOT MVP. Don't.
+
+- A plugin system. The codebase isn't big enough yet to need one.
+- A custom model serving layer. Ollama already exists.
+- A general-purpose computer vision framework. This is a single tool.
+- Async everywhere. Sync code is fine for MVP; the only async piece
+  is the FastAPI server in Week 3.
+- A custom config DSL. YAML + Pydantic is enough.
+- Multi-camera support. Single camera only. Multi-camera is post-MVP.
+- 3D scene reconstruction. Not in scope.
+- A "smart" auto-tuning system that learns over time. Static
+  thresholds with a one-shot calibration are the MVP path.
+
+If you find yourself writing more than ~30 lines of infrastructure
+for any of these, stop and ask whether it's actually needed yet.
+
+----------------------------------------------------------------
+END-OF-WEEK DELIVERABLES
+----------------------------------------------------------------
+
+Each week ends with a working demo and clean tests. Specifically:
+
+Week 1: `anvil pin` followed by `anvil check` on a real camera,
+producing a valid sidecar JSON. All schema tests pass. Optional
+robot home-pose check works if a robot is configured.
+
+Week 2: Move an object 5cm in the scene, run check, get a finding
+that names the object and gives a position delta. Bump the robot
+base, get robot_home_drift and robot_base_moved flags. Layer 3
+fires only when Layers 1-2 are ambiguous.
+
+Week 3: `anvil guard --record-cmd "lerobot record ..."` wraps a
+recording, writes sidecars to `anvil/episode_NNNNNN.anvil.json`,
+and the FastAPI inspector at localhost:7777 shows the pinned scene,
+current view, and recent reports. Public repo, MIT license,
+v0.1.0 release tag.
+
+At each week boundary: update CHANGELOG.md, update README.md status
+section, run the full test suite, run mypy --strict, run ruff.
+
+----------------------------------------------------------------
+WHEN STUCK
+----------------------------------------------------------------
+
+- If a clarifying question would unblock you, ask. Don't pick a
+  random default for something the user clearly cares about.
+
+- If a model isn't behaving as the plan describes, surface the gap.
+  The plan was written against (May 2026) public information about
+  DINOv3, SAM 3, Qwen3-VL; if something has shifted, say so.
+
+- If a dependency has a breaking version, pin the older one and
+  open an issue rather than refactoring around the change.
+
+- If you find yourself rewriting a section of the plan in code
+  comments, you're over-explaining. Trust the reader to read the
+  plan.
+
+- If something the plan says is wrong (it will happen, the plan was
+  written quickly), flag it explicitly: "Plan section 6 says X, but
+  the actual smolagents API uses Y — proposing we update the plan."
+  Don't silently diverge.
+
+----------------------------------------------------------------
+FORGE INTEGRATION REMINDER
+----------------------------------------------------------------
+
+Forge (github.com/arpitg1304/forge) is the sibling project. You are
+NOT modifying Forge. You ARE writing Anvil so that Forge can
+eventually consume it. Concretely:
+
+- Sidecars must exactly match the schema in `docs/metadata_schema.md`.
+- The `manifest_hash` field is what lets Forge detect re-pinning.
+- The `flags` field uses the locked vocabulary; no new flags in v0.1.
+- Don't import anything from Forge. The contract is the JSON file,
+  not a shared Python package.
+
+A separate task at v0.1 release time will be to open a PR or issue
+on Forge proposing the `forge filter --max-scene-drift` integration.
+That is owner's work, not yours, unless explicitly asked.
+
+================================================================
+END OF INSTRUCTIONS — NOW READ anvil_plan.md
+================================================================
