@@ -1,0 +1,92 @@
+[project]
+name = "anvil-robotics"
+version = "0.1.0.dev0"
+description = "Scene-consistency sentinel for robotics data collection. Sibling tool to Forge."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Arpit Gupta", email = "arpit.wpi@gmail.com" },
+]
+keywords = ["robotics", "computer-vision", "data-quality", "lerobot", "vlm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    "click>=8.4.0",
+    "numpy>=2.4.6",
+    "opencv-python>=4.13.0.92",
+    "pydantic>=2.6",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+]
+
+[project.optional-dependencies]
+# Heavy ML stack — DINOv3 / SAM3 / VLM. Populated in Week 1+ as deps are added.
+full = []
+
+[project.scripts]
+anvil = "anvil.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/arpitg1304/anvil"
+Repository = "https://github.com/arpitg1304/anvil"
+Issues = "https://github.com/arpitg1304/anvil/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pre-commit>=3.7",
+    "types-pyyaml>=6.0.12.20260518",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anvil"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle + pyflakes
+    "I",             # isort
+    "B",             # bugbear
+    "UP",            # pyupgrade
+    "RUF",           # ruff-specific
+]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/anvil"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+strict = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
