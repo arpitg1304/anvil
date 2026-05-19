@@ -18,10 +18,18 @@ All notable changes to Anvil are documented here. Format loosely follows
 - `anvil.errors` — `AnvilError` + `PinNotFound`, `ManifestVersionMismatch`,
   `CameraError`, `RobotError`.
 - `anvil.cli` — Click app with the three locked verbs (`pin`, `check`,
-  `guard`). `pin` is end-to-end functional (writes `manifest.yaml` +
-  `reference.png`). `check` loads the manifest and emits a schema-valid
-  `EpisodeReport` JSON with placeholder zeros for the vision scores;
-  exit codes 0 / 1 / 2 / 3 for passed / warning / failed / error.
-  `guard` is a clean "not yet" pointing to Week 3.
-- 58 tests across schema, manifest, cameras, and CLI. `mypy --strict` and
-  `ruff` both clean.
+  `guard`). `guard` is a clean "not yet" pointing to Week 3.
+  - `pin` writes `manifest.yaml`, `reference.png`, `lighting.json`, and
+    `pose/aruco.json`.
+  - `check` loads pin references, runs Layer 1, derives `status` from
+    finding severity, emits a schema-valid `EpisodeReport` JSON.
+    Exit codes 0 / 1 / 2 / 3 for passed / warning / failed / error.
+- `anvil.layers.layer1_fast` — Layer 1 fast path on CPU:
+  - Per-channel BGR histograms + symmetric chi-square distance.
+  - Mean luminance and McCamy-approximated correlated color temperature.
+  - ArUco fiducial detection + rotation drift.
+  - Composite `lighting_drift` ∈ [0, 1], histogram-derived `scene_drift`,
+    and `max_camera_pose_drift_deg` from ArUco orientation deltas.
+  - DINOv3 global cosine remains TODO behind the `[full]` extra.
+- 73 tests across schema, manifest, cameras, Layer 1, and CLI. `mypy
+  --strict` and `ruff` both clean across 15 source files.

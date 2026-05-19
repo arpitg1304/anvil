@@ -24,6 +24,15 @@ from rich.console import Console
 from anvil import __version__
 from anvil.cameras import open_camera
 from anvil.errors import AnvilError, PinNotFound
+from anvil.layers.layer1_fast import (
+    compute_aruco_reference,
+    compute_lighting_reference,
+    load_aruco_reference,
+    load_lighting_reference,
+    run_layer1,
+    save_aruco_reference,
+    save_lighting_reference,
+)
 from anvil.manifest import (
     REFERENCE_IMAGE_FILENAME,
     CameraDriver,
@@ -39,9 +48,11 @@ from anvil.manifest import (
 from anvil.schema import (
     ANVIL_SCHEMA_VERSION,
     EpisodeReport,
+    Finding,
     PinReference,
     Provenance,
     Scores,
+    Status,
 )
 
 _console = Console(stderr=True)
@@ -59,6 +70,43 @@ def _utcnow() -> datetime:
 def _provenance() -> Provenance:
     hardware = {"platform": platform.platform(), "machine": platform.machine()}
     return Provenance(anvil_version=__version__, hardware=hardware)
+
+
+def _status_from_findings(findings: list[Finding]) -> Status:
+    if any(f.severity == "critical" for f in findings):
+        return "failed"
+    if any(f.severity == "warning" for f in findings):
+        return "warning"
+    return "passed"
+
+
+_STATUS_COLOR: dict[Status, str] = {
+    "passed": "green",
+    "warning": "yellow",
+    "failed": "red",
+}
+
+
+def _render_check_summary(report: EpisodeReport) -> None:
+    color = _STATUS_COLOR[report.status]
+    _console.print(
+        f"[bold {color}]{report.status.upper()}[/] — pin [bold]{report.pin.name}[/]"
+    )
+    scores = report.scores
+    _console.print(
+        f"  scene_drift:               {scores.scene_drift:.3f}\n"
+        f"  lighting_drift:            {scores.lighting_drift:.3f}\n"
+        f"  max_camera_pose_drift_deg: {scores.max_camera_pose_drift_deg:.2f}"
+    )
+    if report.flags:
+        _console.print(f"  flags: {', '.join(report.flags)}")
+    for finding in report.findings:
+        sev_color = {"info": "blue", "warning": "yellow", "critical": "red"}[finding.severity]
+        _console.print(
+            f"  [bold {sev_color}]{finding.severity.upper()}[/] "
+            f"[L{finding.layer} {finding.component}] {finding.detail}"
+        )
+        _console.print(f"     fix: {finding.fix}")
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -136,6 +184,11 @@ def pin_cmd(
         if not cv2.imwrite(str(ref_path), frame):
             raise AnvilError(f"Failed to write reference frame to {ref_path}")
 
+        lighting_ref = compute_lighting_reference(frame)
+        save_lighting_reference(lighting_ref, pin_dir)
+        aruco_ref = compute_aruco_reference(frame)
+        save_aruco_reference(aruco_ref, pin_dir)
+
         height, width = frame.shape[:2]
         manifest = Manifest(
             anvil_schema_version=ANVIL_SCHEMA_VERSION,
@@ -149,14 +202,24 @@ def pin_cmd(
             ),
             robot=RobotSpec(enabled=robot),
             thresholds=ThresholdSpec(),
+            aruco_present=bool(aruco_ref.markers),
         )
         save_manifest(manifest, pin_dir)
         manifest_hash = compute_manifest_hash(pin_dir)
 
+        marker_ids = [m.id for m in aruco_ref.markers]
         _console.print(f"[bold green]✓[/] Pinned [bold]{name}[/] at {pin_dir}")
-        _console.print(f"  reference:    {ref_path}")
-        _console.print(f"  resolution:   {width}x{height}")
-        _console.print(f"  robot:        {'enabled' if robot else 'disabled'}")
+        _console.print(f"  reference:     {ref_path}")
+        _console.print(f"  resolution:    {width}x{height}")
+        _console.print(f"  robot:         {'enabled' if robot else 'disabled'}")
+        _console.print(
+            f"  lighting:      mean lum={lighting_ref.mean_luminance:.1f}, "
+            f"CCT={lighting_ref.cct_kelvin:.0f}K"
+        )
+        _console.print(
+            f"  aruco:         {len(marker_ids)} marker(s)"
+            + (f" {marker_ids}" if marker_ids else "")
+        )
         _console.print(f"  manifest_hash: {manifest_hash}")
     except AnvilError as exc:
         _console.print(f"[bold red]✗[/] {exc}")
@@ -215,15 +278,22 @@ def check_cmd(
         pin_dir = pin_directory(pin_name, root=pin_root)
         manifest = load_manifest(pin_dir)
         manifest_hash = compute_manifest_hash(pin_dir)
+        lighting_ref = load_lighting_reference(pin_dir)
+        aruco_ref = load_aruco_reference(pin_dir)
 
-        # Open the camera. CLI flags override the pinned device if provided.
         driver = camera_driver or manifest.camera.driver
         device = camera_device or manifest.camera.device
         with open_camera(driver, device) as cam:
-            _ = cam.grab()  # frame is used by Layer 1; not yet wired
+            frame = cam.grab()
 
-        # Placeholder report: vision layers land in subsequent Week 1 commits.
-        # The schema and pipe wiring are real; the scores are stub zeros.
+        layer1 = run_layer1(
+            current_frame=frame,
+            lighting_ref=lighting_ref,
+            aruco_ref=aruco_ref,
+            thresholds=manifest.thresholds,
+        )
+
+        status = _status_from_findings(layer1.findings)
         report = EpisodeReport(
             anvil_schema_version=ANVIL_SCHEMA_VERSION,
             episode_id=episode_id,
@@ -233,27 +303,24 @@ def check_cmd(
                 manifest_hash=manifest_hash,
                 pinned_at=manifest.pinned_at,
             ),
-            status="passed",
+            status=status,
             operator_action="proceeded",
             scores=Scores(
-                scene_drift=0.0,
-                lighting_drift=0.0,
+                scene_drift=layer1.scene_drift,
+                lighting_drift=layer1.lighting_drift,
                 max_object_drift_cm=0.0,
-                max_camera_pose_drift_deg=0.0,
+                max_camera_pose_drift_deg=layer1.max_camera_pose_drift_deg,
                 max_robot_joint_drift_deg=0.0,
             ),
-            flags=[],
-            findings=[],
+            flags=layer1.flags,
+            findings=layer1.findings,
             provenance=_provenance(),
         )
 
         if json_only:
             click.echo(report.model_dump_json())
         else:
-            _console.print(f"[bold green]✓[/] Pin loaded: [bold]{manifest.name}[/]")
-            _console.print(f"  status:  [green]{report.status}[/]")
-            _console.print(f"  scores:  {report.scores.model_dump()}")
-            _console.print("[yellow]Layer 1 vision not yet wired — placeholder report.[/]")
+            _render_check_summary(report)
 
         sys.exit(
             {
