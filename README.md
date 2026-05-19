@@ -62,6 +62,12 @@ ffplay -f avfoundation -framerate 30 -i 0                 # live preview from in
 If multiple cameras show up, the OpenCV index usually matches enumeration
 order — try `--camera 0` first, then `1`, etc.
 
+**Optional but recommended for serious rigs:** print four ArUco fiducials
+and stick them at the workspace corners. See [docs/aruco_setup.md](docs/aruco_setup.md)
+for sizing, placement, and a printable generator one-liner. With markers
+in place, Anvil can detect camera-mount sag/twist — the single most
+common silent failure mode for ceiling-mounted webcams over weeks of use.
+
 ## How it works
 
 A three-layer cascade. Cheap checks gate expensive ones, so most checks
