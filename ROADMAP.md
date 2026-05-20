@@ -10,8 +10,8 @@ Living document. Full context: [anvil_plan.md](anvil_plan.md).
 - [x] Camera abstraction (USB/V4L2 webcam + file driver for tests)
 - [x] Manifest schema + save/load + content hashing
 - [x] JSON output, exit-code semantics (0 / 1 / 2 / 3)
-- [x] Layer 1: histogram + ArUco + composite drift scores (DINOv3 still pending)
-- [ ] Layer 1: DINOv3 global cosine (gated behind `[full]` extra)
+- [x] Layer 1: histogram + ArUco + composite drift scores
+- [x] Layer 1: DINOv3 global cosine (gated behind `[full]` extra)
 - [ ] Layer 2 keypoints: SuperPoint + LightGlue
 - [ ] Layer 0: LeRobot driver home-pose check (opt-in)
 

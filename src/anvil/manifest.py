@@ -88,6 +88,8 @@ class Manifest(BaseModel):
     # Filled in Week 2 when SAM3 lands; empty for Layer-1-only pins.
     objects: list[str] = Field(default_factory=list)
     aruco_present: bool = False
+    embedding_present: bool = False
+    embedder_name: str | None = None
 
 
 # --- filesystem helpers ---------------------------------------------------

@@ -31,8 +31,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Heavy ML stack — DINOv3 / SAM3 / VLM. Populated in Week 1+ as deps are added.
-full = []
+# Heavy ML stack — DINOv3 / SAM3 / VLM. SAM3 + VLM land in Week 2+.
+# Pillow + torchvision are required at runtime by HF AutoImageProcessor for
+# vision models; transformers doesn't declare them as hard deps.
+full = [
+    "torch>=2.4",
+    "torchvision>=0.19",
+    "transformers>=4.45",
+    "pillow>=10",
+]
 
 [project.scripts]
 anvil = "anvil.cli:main"
@@ -85,6 +92,16 @@ files = ["src/anvil"]
 [[tool.mypy.overrides]]
 module = ["tests.*"]
 strict = false
+
+# Optional [full] deps — only present in environments that installed the
+# heavy ML extra. Missing stubs is expected; we don't want mypy red in
+# bare-install dev shells. When the package *is* installed, transformers'
+# public API is mostly untyped, so we also silence no-untyped-call to keep
+# the [full] dev path green.
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*", "transformers", "transformers.*"]
+ignore_missing_imports = true
+disable_error_code = ["no-untyped-call"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

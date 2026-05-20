@@ -31,3 +31,7 @@ htmlcov/
 *.pth
 *.safetensors
 *.npz
+
+# Local pin directories. Anvil pins are meant to be committed to the *user's*
+# data repo, not to Anvil's own source tree.
+.anvil/

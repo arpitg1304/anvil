@@ -1,18 +1,18 @@
 """Layer 1 — fast vision path.
 
-Runs on CPU. Computes:
+Runs on CPU or a small GPU. Computes:
 
 * Per-channel BGR histograms + symmetric chi-square distance.
 * Mean luminance and McCamy-approximated correlated colour temperature (CCT).
 * ArUco fiducial detection and rotation drift (if markers were pinned).
-
-DINOv3 global cosine is *part of Layer 1 in the plan* but lives behind the
-``[full]`` extra and will be wired into ``scene_drift`` in a later session.
-Until then ``scene_drift`` is histogram-derived.
+* Global image embedding (DINOv3 by default) → ``scene_drift = 1 - cosine``.
+  Falls back to the histogram chi-square when no embedder is available
+  (bare install, no GPU, weights unreachable, etc.).
 
 The module is self-contained: it owns the on-disk reference shapes
-(``lighting.json`` and ``pose/aruco.json``) and exposes save/load helpers
-for both. ``run_layer1`` is the orchestrator the CLI calls.
+(``lighting.json``, ``pose/aruco.json``, ``reference_features.npz``) and
+exposes save/load helpers for each. ``run_layer1`` is the orchestrator the
+CLI calls.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from anvil.cameras.base import Frame
 from anvil.manifest import ThresholdSpec
+from anvil.models import GlobalEmbedder
 from anvil.schema import (
     Finding,
     Flag,
@@ -37,6 +38,7 @@ HISTOGRAM_BINS = 64
 LIGHTING_FILENAME = "lighting.json"
 ARUCO_FILENAME = "aruco.json"
 ARUCO_SUBDIR = "pose"
+EMBEDDING_FILENAME = "reference_features.npz"
 DEFAULT_ARUCO_DICTIONARY = "DICT_4X4_50"
 
 # Normalization knobs for the composite lighting_drift score. They map a
@@ -88,12 +90,28 @@ class ArucoReference(BaseModel):
     markers: list[ArucoMarker] = Field(default_factory=list)
 
 
+class EmbeddingReference(BaseModel):
+    """L2-normalized global embedding captured at pin time.
+
+    Persisted as ``reference_features.npz`` (compressed). The ``embedder_name``
+    field lets ``check`` detect that the user has swapped backbones since the
+    pin was made.
+    """
+
+    model_config = _FORWARD_COMPAT
+
+    embedder_name: str
+    dim: int
+    vector: list[float]
+
+
 class Layer1Output(BaseModel):
     """Result of one Layer 1 pass. Score fields feed `EpisodeReport.scores`."""
 
     model_config = _FORWARD_COMPAT
 
     scene_drift: float
+    scene_drift_source: str  # "embedder:<name>" or "histogram"
     lighting_drift: float
     max_camera_pose_drift_deg: float
     findings: list[Finding] = Field(default_factory=list)
@@ -258,6 +276,8 @@ def run_layer1(
     lighting_ref: LightingReference,
     aruco_ref: ArucoReference,
     thresholds: ThresholdSpec,
+    embedding_ref: EmbeddingReference | None = None,
+    embedder: GlobalEmbedder | None = None,
 ) -> Layer1Output:
     findings: list[Finding] = []
     flags: list[Flag] = []
@@ -349,11 +369,16 @@ def run_layer1(
             if "camera_pose_drift" not in flags:
                 flags.append("camera_pose_drift")
 
-    # --- scene_drift proxy ---
-    # DINOv3 will replace this with 1 - cosine in a later session. Until then
-    # we surface the same chi^2 — but only as a *separate* finding when it
-    # can't already be explained by the lighting flag.
-    scene_drift = float(np.clip(hist_chi2, 0.0, 1.0))
+    # --- scene_drift ---
+    # Prefer the embedder cosine path; fall back to the histogram chi^2 when
+    # no embedder is wired up or the pin pre-dates this feature. Only one path
+    # contributes to scene_drift — blending muddies thresholds.
+    scene_drift, scene_drift_source, scene_evidence = _compute_scene_drift(
+        current_frame=current_frame,
+        hist_chi2=hist_chi2,
+        embedding_ref=embedding_ref,
+        embedder=embedder,
+    )
     if scene_drift > thresholds.scene_drift and "lighting_shift" not in flags:
         findings.append(
             Finding(
@@ -363,20 +388,54 @@ def run_layer1(
                 component="scene",
                 subject="global",
                 issue="scene_changed",
-                detail=f"Global histogram chi^2 above threshold ({scene_drift:.3f}).",
+                detail=(
+                    f"Scene drift {scene_drift:.3f} above threshold "
+                    f"({scene_drift_source})."
+                ),
                 fix="Layer 2 (SAM3) will localize the changed region once it lands.",
-                evidence={"histogram_chi2": hist_chi2},
+                evidence=scene_evidence,
             )
         )
         flags.append("scene_drift")
 
     return Layer1Output(
         scene_drift=scene_drift,
+        scene_drift_source=scene_drift_source,
         lighting_drift=lighting_drift,
         max_camera_pose_drift_deg=pose_drift_deg,
         findings=findings,
         flags=flags,
     )
+
+
+def _compute_scene_drift(
+    *,
+    current_frame: Frame,
+    hist_chi2: float,
+    embedding_ref: EmbeddingReference | None,
+    embedder: GlobalEmbedder | None,
+) -> tuple[float, str, dict[str, object]]:
+    """Returns (drift in [0, 1], source label, evidence dict).
+
+    Cosine path runs only when both the reference and a live embedder are
+    available *and* their names match. A name mismatch is a soft warning, not
+    an error — we fall back to histogram so the check still produces a
+    sensible number.
+    """
+    if embedding_ref is not None and embedder is not None:
+        if embedder.name == embedding_ref.embedder_name:
+            current_vec = embedder.embed(current_frame)
+            ref_vec = np.asarray(embedding_ref.vector, dtype=np.float32)
+            # Both vectors are L2-normalized by contract; cosine = dot product.
+            cosine = float(np.dot(current_vec, ref_vec))
+            drift = float(np.clip(1.0 - cosine, 0.0, 1.0))
+            return (
+                drift,
+                f"embedder:{embedder.name}",
+                {"cosine": cosine, "embedder": embedder.name},
+            )
+    drift = float(np.clip(hist_chi2, 0.0, 1.0))
+    return (drift, "histogram", {"histogram_chi2": hist_chi2})
 
 
 # --- persistence ---------------------------------------------------------
@@ -416,23 +475,69 @@ def load_aruco_reference(pin_dir: Path) -> ArucoReference:
     )
 
 
+def embedding_path(pin_dir: Path) -> Path:
+    return pin_dir / EMBEDDING_FILENAME
+
+
+def compute_embedding_reference(
+    frame: Frame, embedder: GlobalEmbedder
+) -> EmbeddingReference:
+    vec = embedder.embed(frame)
+    return EmbeddingReference(
+        embedder_name=embedder.name,
+        dim=int(vec.shape[0]),
+        vector=vec.astype(np.float32).tolist(),
+    )
+
+
+def save_embedding_reference(ref: EmbeddingReference, pin_dir: Path) -> Path:
+    target = embedding_path(pin_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        target,
+        embedding=np.asarray(ref.vector, dtype=np.float32),
+        embedder_name=np.array(ref.embedder_name),
+    )
+    return target
+
+
+def load_embedding_reference(pin_dir: Path) -> EmbeddingReference | None:
+    target = embedding_path(pin_dir)
+    if not target.exists():
+        return None
+    data = np.load(target, allow_pickle=False)
+    vector = data["embedding"].astype(np.float32)
+    embedder_name = str(data["embedder_name"])
+    return EmbeddingReference(
+        embedder_name=embedder_name,
+        dim=int(vector.shape[0]),
+        vector=vector.tolist(),
+    )
+
+
 __all__ = [
     "ARUCO_FILENAME",
     "DEFAULT_ARUCO_DICTIONARY",
+    "EMBEDDING_FILENAME",
     "HISTOGRAM_BINS",
     "LIGHTING_FILENAME",
     "ArucoMarker",
     "ArucoReference",
+    "EmbeddingReference",
     "Layer1Output",
     "LightingReference",
     "aruco_path",
     "compute_aruco_reference",
+    "compute_embedding_reference",
     "compute_lighting_reference",
     "detect_aruco_markers",
+    "embedding_path",
     "lighting_path",
     "load_aruco_reference",
+    "load_embedding_reference",
     "load_lighting_reference",
     "run_layer1",
     "save_aruco_reference",
+    "save_embedding_reference",
     "save_lighting_reference",
 ]

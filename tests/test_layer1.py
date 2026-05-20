@@ -8,31 +8,63 @@ camera output.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 import cv2
 import numpy as np
 import pytest
 
+from anvil.cameras.base import Frame
 from anvil.layers.layer1_fast import (
     ARUCO_FILENAME,
     DEFAULT_ARUCO_DICTIONARY,
+    EMBEDDING_FILENAME,
     HISTOGRAM_BINS,
     LIGHTING_FILENAME,
     ArucoMarker,
     ArucoReference,
+    EmbeddingReference,
     LightingReference,
     aruco_path,
     compute_aruco_reference,
+    compute_embedding_reference,
     compute_lighting_reference,
     detect_aruco_markers,
+    embedding_path,
     lighting_path,
     load_aruco_reference,
+    load_embedding_reference,
     load_lighting_reference,
     run_layer1,
     save_aruco_reference,
+    save_embedding_reference,
     save_lighting_reference,
 )
 from anvil.manifest import ThresholdSpec
+from anvil.models import GlobalEmbedder
+
+
+class _FixedEmbedder(GlobalEmbedder):
+    """Embedder that returns a caller-supplied vector. Lets tests force a
+    known cosine distance between pin-time and check-time embeddings.
+    """
+
+    name: ClassVar[str] = "fixed-test"
+
+    def __init__(self, vector: np.ndarray) -> None:
+        v = vector.astype(np.float32)
+        norm = float(np.linalg.norm(v))
+        self._vec = v / norm if norm > 0 else v
+
+    @property
+    def dim(self) -> int:
+        return int(self._vec.shape[0])
+
+    def load(self) -> None:
+        return None
+
+    def embed(self, frame_bgr: Frame) -> np.ndarray:
+        return self._vec.copy()
 
 
 def _solid_frame(
@@ -223,3 +255,88 @@ def test_aruco_reference_round_trip(tmp_path: Path) -> None:
     assert saved.parent.name == "pose"
     reloaded = load_aruco_reference(tmp_path)
     assert reloaded == ref
+
+
+# --- embedding-path scene_drift -----------------------------------------
+
+
+def test_run_layer1_uses_embedder_when_ref_and_embedder_match() -> None:
+    pinned = _solid_frame((128, 128, 128))
+    ref_vec = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    pin_embedder = _FixedEmbedder(ref_vec)
+    embedding_ref = compute_embedding_reference(pinned, pin_embedder)
+
+    # At check time, embedder returns a different unit vector — known cosine.
+    check_vec = np.array([0.6, 0.8, 0.0, 0.0], dtype=np.float32)
+    check_embedder = _FixedEmbedder(check_vec)
+    light_ref, aruco_ref = _build_refs(pinned)
+    out = run_layer1(
+        current_frame=pinned,
+        lighting_ref=light_ref,
+        aruco_ref=aruco_ref,
+        thresholds=ThresholdSpec(),
+        embedding_ref=embedding_ref,
+        embedder=check_embedder,
+    )
+    # cosine(ref, check) = 0.6 → drift = 0.4
+    assert out.scene_drift == pytest.approx(0.4, abs=1e-5)
+    assert out.scene_drift_source == "embedder:fixed-test"
+
+
+def test_run_layer1_falls_back_to_histogram_when_no_embedder() -> None:
+    frame = _solid_frame((128, 128, 128))
+    light_ref, aruco_ref = _build_refs(frame)
+    out = run_layer1(
+        current_frame=frame,
+        lighting_ref=light_ref,
+        aruco_ref=aruco_ref,
+        thresholds=ThresholdSpec(),
+        embedding_ref=None,
+        embedder=None,
+    )
+    # Identical frames → histogram chi^2 ~ 0, no embedder, source = histogram.
+    assert out.scene_drift == pytest.approx(0.0, abs=1e-6)
+    assert out.scene_drift_source == "histogram"
+
+
+def test_run_layer1_falls_back_when_embedder_name_mismatches_ref() -> None:
+    # Manifest pinned with embedder X, but current process loaded embedder Y.
+    # The check should fall back to histogram rather than compare apples to
+    # oranges across feature spaces.
+    pinned = _solid_frame((128, 128, 128))
+    ref = EmbeddingReference(
+        embedder_name="some-other-backbone",
+        dim=4,
+        vector=[1.0, 0.0, 0.0, 0.0],
+    )
+    embedder = _FixedEmbedder(np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32))
+    light_ref, aruco_ref = _build_refs(pinned)
+    out = run_layer1(
+        current_frame=pinned,
+        lighting_ref=light_ref,
+        aruco_ref=aruco_ref,
+        thresholds=ThresholdSpec(),
+        embedding_ref=ref,
+        embedder=embedder,
+    )
+    assert out.scene_drift_source == "histogram"
+
+
+def test_embedding_reference_round_trip(tmp_path: Path) -> None:
+    ref = EmbeddingReference(
+        embedder_name="fixed-test",
+        dim=4,
+        vector=[0.5, 0.5, 0.5, 0.5],
+    )
+    saved = save_embedding_reference(ref, tmp_path)
+    assert saved == embedding_path(tmp_path)
+    assert saved.name == EMBEDDING_FILENAME
+    reloaded = load_embedding_reference(tmp_path)
+    assert reloaded is not None
+    assert reloaded.embedder_name == ref.embedder_name
+    assert reloaded.dim == ref.dim
+    assert reloaded.vector == pytest.approx(ref.vector)
+
+
+def test_load_embedding_reference_returns_none_when_missing(tmp_path: Path) -> None:
+    assert load_embedding_reference(tmp_path) is None
