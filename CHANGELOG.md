@@ -28,8 +28,22 @@ All notable changes to Anvil are documented here. Format loosely follows
   - Per-channel BGR histograms + symmetric chi-square distance.
   - Mean luminance and McCamy-approximated correlated color temperature.
   - ArUco fiducial detection + rotation drift.
-  - Composite `lighting_drift` ∈ [0, 1], histogram-derived `scene_drift`,
-    and `max_camera_pose_drift_deg` from ArUco orientation deltas.
-  - DINOv3 global cosine remains TODO behind the `[full]` extra.
-- 73 tests across schema, manifest, cameras, Layer 1, and CLI. `mypy
-  --strict` and `ruff` both clean across 15 source files.
+  - Composite `lighting_drift` ∈ [0, 1] and `max_camera_pose_drift_deg`
+    from ArUco orientation deltas.
+- `anvil.models` — pluggable global-embedder abstraction:
+  - `GlobalEmbedder` ABC + `load_embedder()` factory.
+  - `DINOv3Embedder` (`facebook/dinov3-vits16-pretrain-lvd1689m`, primary)
+    and `DINOv2Embedder` (`facebook/dinov2-small`, fallback) concrete impls,
+    lazy-loaded behind the `[full]` extra. Factory cascades DINOv3 → DINOv2,
+    so users blocked on the DINOv3 HF gate still get a semantic
+    `scene_drift` signal. CUDA when available, CPU otherwise.
+  - `[full]` extra pulls `torch>=2.4`, `torchvision>=0.19`,
+    `transformers>=4.45`, `pillow>=10`.
+- `Layer1Output.scene_drift_source` exposes which path produced the
+  number — `embedder:<name>` when DINOv3 is wired up, `histogram` on
+  fallback. `run_layer1` accepts optional `embedding_ref` + `embedder`
+  kwargs; `pin` saves `reference_features.npz`, `check` reuses it.
+- `Manifest` gains `embedding_present: bool` and `embedder_name: str | None`
+  for round-trip provenance.
+- 84 tests across schema, manifest, cameras, Layer 1, embedder, and CLI.
+  `mypy --strict` and `ruff` both clean across 17 source files.

@@ -26,11 +26,14 @@ from anvil.cameras import open_camera
 from anvil.errors import AnvilError, PinNotFound
 from anvil.layers.layer1_fast import (
     compute_aruco_reference,
+    compute_embedding_reference,
     compute_lighting_reference,
     load_aruco_reference,
+    load_embedding_reference,
     load_lighting_reference,
     run_layer1,
     save_aruco_reference,
+    save_embedding_reference,
     save_lighting_reference,
 )
 from anvil.manifest import (
@@ -45,6 +48,7 @@ from anvil.manifest import (
     pin_directory,
     save_manifest,
 )
+from anvil.models import load_embedder
 from anvil.schema import (
     ANVIL_SCHEMA_VERSION,
     EpisodeReport,
@@ -87,14 +91,15 @@ _STATUS_COLOR: dict[Status, str] = {
 }
 
 
-def _render_check_summary(report: EpisodeReport) -> None:
+def _render_check_summary(report: EpisodeReport, scene_drift_source: str) -> None:
     color = _STATUS_COLOR[report.status]
     _console.print(
         f"[bold {color}]{report.status.upper()}[/] — pin [bold]{report.pin.name}[/]"
     )
     scores = report.scores
     _console.print(
-        f"  scene_drift:               {scores.scene_drift:.3f}\n"
+        f"  scene_drift:               {scores.scene_drift:.3f} "
+        f"({scene_drift_source})\n"
         f"  lighting_drift:            {scores.lighting_drift:.3f}\n"
         f"  max_camera_pose_drift_deg: {scores.max_camera_pose_drift_deg:.2f}"
     )
@@ -189,6 +194,13 @@ def pin_cmd(
         aruco_ref = compute_aruco_reference(frame)
         save_aruco_reference(aruco_ref, pin_dir)
 
+        embedder = load_embedder()
+        embedder_name: str | None = None
+        if embedder is not None:
+            embedding_ref = compute_embedding_reference(frame, embedder)
+            save_embedding_reference(embedding_ref, pin_dir)
+            embedder_name = embedder.name
+
         height, width = frame.shape[:2]
         manifest = Manifest(
             anvil_schema_version=ANVIL_SCHEMA_VERSION,
@@ -203,6 +215,8 @@ def pin_cmd(
             robot=RobotSpec(enabled=robot),
             thresholds=ThresholdSpec(),
             aruco_present=bool(aruco_ref.markers),
+            embedding_present=embedder_name is not None,
+            embedder_name=embedder_name,
         )
         save_manifest(manifest, pin_dir)
         manifest_hash = compute_manifest_hash(pin_dir)
@@ -219,6 +233,9 @@ def pin_cmd(
         _console.print(
             f"  aruco:         {len(marker_ids)} marker(s)"
             + (f" {marker_ids}" if marker_ids else "")
+        )
+        _console.print(
+            f"  embedder:      {embedder_name if embedder_name else 'histogram (fallback)'}"
         )
         _console.print(f"  manifest_hash: {manifest_hash}")
     except AnvilError as exc:
@@ -280,6 +297,8 @@ def check_cmd(
         manifest_hash = compute_manifest_hash(pin_dir)
         lighting_ref = load_lighting_reference(pin_dir)
         aruco_ref = load_aruco_reference(pin_dir)
+        embedding_ref = load_embedding_reference(pin_dir)
+        embedder = load_embedder() if embedding_ref is not None else None
 
         driver = camera_driver or manifest.camera.driver
         device = camera_device or manifest.camera.device
@@ -291,6 +310,8 @@ def check_cmd(
             lighting_ref=lighting_ref,
             aruco_ref=aruco_ref,
             thresholds=manifest.thresholds,
+            embedding_ref=embedding_ref,
+            embedder=embedder,
         )
 
         status = _status_from_findings(layer1.findings)
@@ -320,7 +341,7 @@ def check_cmd(
         if json_only:
             click.echo(report.model_dump_json())
         else:
-            _render_check_summary(report)
+            _render_check_summary(report, layer1.scene_drift_source)
 
         sys.exit(
             {

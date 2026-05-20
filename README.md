@@ -26,6 +26,14 @@ pip install anvil-robotics            # Layer 1 cascade only — works on CPU
 pip install anvil-robotics[full]      # + DINOv3, SAM 3, VLM agent (needs GPU)
 ```
 
+**From source** (until v0.1.0 is published):
+
+```bash
+git clone https://github.com/arpitg1304/anvil && cd anvil
+uv sync --group dev
+uv run anvil --help
+```
+
 ## Quick start
 
 ```bash
@@ -34,7 +42,27 @@ anvil check --against pick_red_cube
 anvil guard --against pick_red_cube --record-cmd "lerobot record ..."
 ```
 
-See [docs/quickstart.md](docs/quickstart.md) when it lands.
+Add `--force` to `pin` to overwrite an existing reference. To validate the
+pin → check loop end-to-end (including a deliberate camera nudge), follow
+the sanity-check flow in [docs/aruco_setup.md](docs/aruco_setup.md#fix-in-place-then-sanity-check).
+
+**Enable the DINOv3 backbone (recommended).** The bare install computes
+`scene_drift` from a colour histogram — fine for catching gross changes,
+weak on subtle semantic drift (object swaps, partial occlusion). Install
+the `[full]` extra and authenticate with Hugging Face to switch to
+DINOv3-ViT-S/16 (`1 - cosine` of the global CLS embedding):
+
+```bash
+uv sync --extra full
+uv run --extra full hf auth login    # paste a read-scope HF token
+```
+
+DINOv3 weights are gated — accept the licence at
+[facebook/dinov3-vits16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m)
+first. If the gate hasn't been approved yet, Anvil cascades to DINOv2-Small
+(ungated) automatically; `pin` and `check` print which backbone is live as
+the `embedder:` field. When no embedder loads, the histogram fallback runs
+silently — pin output will say `embedder: histogram (fallback)`.
 
 ## Finding your camera
 
@@ -80,6 +108,26 @@ finish in well under a second:
 
 See [docs/architecture.md](docs/architecture.md) and the full plan in
 [anvil_plan.md](anvil_plan.md).
+
+## Troubleshooting
+
+- **`pip install anvil-robotics` fails / not on PyPI:** v0.1.0 isn't published
+  yet — use the from-source path above.
+- **`pin` reports `aruco: 0 marker(s)` with markers visible:** markers need a
+  white quiet zone for boundary contrast against the work surface. See
+  [docs/aruco_setup.md](docs/aruco_setup.md#troubleshooting).
+- **`pin` shows `embedder: histogram (fallback)` after installing `[full]`:**
+  the DINOv3 weights couldn't be fetched. Most likely you haven't accepted the
+  licence on [the HF model page](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m)
+  or aren't authenticated. Run `uv run --extra full hf auth login` with a
+  read-scope token. While waiting on the gate, the factory cascades to
+  DINOv2 (`embedder: dinov2-small`) automatically.
+- **`$VIRTUAL_ENV` empty after `source .venv/bin/activate`:** `pyenv
+  virtualenv-init` in your shell rc overrides it on every prompt. Use `uv run
+  <cmd>` instead, or `PROMPT_COMMAND= source .venv/bin/activate`.
+- **`pytest` ImportError for `lark` from a `/opt/ros/.../python3.12` path:**
+  ROS 2's `setup.bash` is leaking `PYTHONPATH` into the venv. Prefix the
+  command with `PYTHONPATH= ` or stop sourcing ROS globally in `~/.bashrc`.
 
 ## License
 
