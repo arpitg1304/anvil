@@ -76,23 +76,89 @@ the `DICT_4X4_50` range (0–49). The numbering above is just convention
 - **Paper:** Matte if possible — glossy reflects overhead LEDs and
   confuses detection.
 
-## Generate
+## Sample markers (printable)
 
-One-liner using Anvil's own OpenCV install, so the markers are
-guaranteed to match what Anvil decodes:
+Four print-ready PNGs are checked in next to this doc:
+
+- [marker_0.png](marker_0.png)
+- [marker_1.png](marker_1.png)
+- [marker_2.png](marker_2.png)
+- [marker_3.png](marker_3.png)
+
+Each is a ~13 cm × 13 cm canvas at 305 DPI containing:
+
+- a 10 cm `DICT_4X4_50` marker (centered)
+- a 5 mm white quiet zone around the marker
+- a thin black **cut line** at the 11 cm boundary
+- ~1 cm of printer-safe white margin outside the cut line
+
+```
+┌──────────────────────────────┐  ← page edge (~13 cm)
+│                              │
+│   ┌──────────────────────┐   │  ← cut line (11 cm)
+│   │                      │   │
+│   │   ███████████████    │   │
+│   │   ██   ArUco    ██   │   │  ← marker (10 cm)
+│   │   ██   marker   ██   │   │
+│   │   ███████████████    │   │
+│   │                      │   │
+│   └──────────────────────┘   │
+│                              │
+└──────────────────────────────┘
+```
+
+Cut along the printed black line — not the page edge — and you get an
+11 cm square with the marker correctly inset by 5 mm of white on every
+side.
+
+## Regenerating from scratch
+
+If you want different IDs, a different physical size, or you've lost
+the sample PNGs, this one-liner reproduces them. Uses Anvil's own
+OpenCV install so the marker bits are guaranteed to match what Anvil
+decodes:
 
 ```bash
 uv run --project <path-to-anvil> python3 -c "
-import cv2
+import cv2, numpy as np
+DPI = 305
+PX_PER_MM = DPI / 25.4
+MARKER_PX = int(round(100 * PX_PER_MM))   # 10 cm marker
+QUIET_PX  = int(round(5   * PX_PER_MM))   # 5 mm quiet zone
+SAFETY_PX = int(round(10  * PX_PER_MM))   # 10 mm printer-safe margin outside cut line
+CANVAS_PX = MARKER_PX + 2*(QUIET_PX + SAFETY_PX)
 d = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 for i in range(4):
-    cv2.imwrite(f'marker_{i}.png', cv2.aruco.generateImageMarker(d, i, 1200))
-"
+    marker = cv2.aruco.generateImageMarker(d, i, MARKER_PX)
+    canvas = np.full((CANVAS_PX, CANVAS_PX), 255, dtype=np.uint8)
+    off = SAFETY_PX + QUIET_PX
+    canvas[off:off+MARKER_PX, off:off+MARKER_PX] = marker
+    cv2.rectangle(canvas, (SAFETY_PX, SAFETY_PX),
+                  (CANVAS_PX-SAFETY_PX-1, CANVAS_PX-SAFETY_PX-1), 0, 2)
+    cv2.imwrite(f'marker_{i}.png', canvas)
+print(f'wrote marker_0..3.png at {CANVAS_PX}px square (~13cm at 305 DPI)')
+" && sips -s dpiHeight 305 -s dpiWidth 305 marker_*.png
 ```
 
-Writes `marker_0.png` … `marker_3.png` at 1200×1200 px. In your printer
-dialog, set the size to "fit to 10 cm wide" (or scale to whatever
-physical size you chose).
+Change `100` (the marker side in mm) to resize. The `sips` step at the
+end embeds the DPI metadata so macOS Preview prints at the correct
+physical size without per-page percentage math.
+
+## Print on macOS
+
+1. `open docs/marker_0.png` (or whichever you're printing).
+2. **⌘P** → click **"Show Details"** if you see the compact dialog.
+3. **Scale: 100%** — *do not* use "Scale to fit". With the embedded
+   305 DPI metadata, 100% is the correct physical size.
+4. Paper: US Letter or A4, orientation either way (one marker per page).
+5. Print, then **cut along the printed black line** (not the page edge).
+6. **Verify with a ruler** that the cut square is ~11 cm and the marker
+   black border sits ~5 mm inside it.
+
+If your printer driver ignores the DPI metadata (the cut square comes
+out the wrong size at 100%), fall back to **Custom Scale: 24%** —
+Preview otherwise treats the PNG as 72 DPI and that percentage maps the
+1561 px canvas to ~13 cm.
 
 ## Fix in place, then sanity-check
 
