@@ -489,10 +489,18 @@ def compute_object_references(
         return []
     unique_prompts = list(dict.fromkeys(prompt for _name, prompt in objects))
     detections = detector.detect(frame, unique_prompts)
-    by_prompt = {d.name: d for d in detections}
+    # Pin-time: pick the single highest-confidence detection per prompt.
+    # Detectors return all candidates above their threshold; multiple
+    # candidates per prompt are normal on cluttered scenes.
+    best_by_prompt: dict[str, DetectedObject] = {}
+    for d in detections:
+        current = best_by_prompt.get(d.name)
+        if current is None or d.confidence > current.confidence:
+            best_by_prompt[d.name] = d
+
     out: list[tuple[str, ObjectReference | None]] = []
     for name, prompt in objects:
-        match = by_prompt.get(prompt)
+        match = best_by_prompt.get(prompt)
         if match is None:
             out.append((name, None))
             continue
@@ -523,6 +531,29 @@ def load_object_references(pin_dir: Path) -> list[ObjectReference]:
     for path in sorted(dir_.glob("*.json")):
         refs.append(ObjectReference.model_validate_json(path.read_text("utf-8")))
     return refs
+
+
+def _match_to_pinned(
+    ref: ObjectReference, candidates: list[DetectedObject]
+) -> DetectedObject | None:
+    """Pick the candidate whose bbox centroid is closest to the pin's.
+
+    Open-vocab detectors return multiple candidates per prompt on cluttered
+    scenes (slats, edges, brackets all look like "rack"); the highest-conf
+    candidate flips between near-identical frames because the score
+    differences are within noise. Matching by spatial prior — "where was
+    this object pinned?" — is stable across runs.
+
+    Returns ``None`` if no candidates were supplied (caller treats as
+    ``object_missing``).
+    """
+    if not candidates:
+        return None
+    rx, ry = ref.centroid
+    return min(
+        candidates,
+        key=lambda d: (d.centroid[0] - rx) ** 2 + (d.centroid[1] - ry) ** 2,
+    )
 
 
 def _bbox_iou(
@@ -572,14 +603,22 @@ def run_layer2_objects(
 
     prompts = [ref.prompt for ref in object_refs]
     detections = detector.detect(current_frame, prompts)
-    by_prompt = {d.name: d for d in detections}
+    # Group all candidates per prompt — open-vocab detectors typically
+    # return several per class on cluttered scenes, and the "best-conf"
+    # candidate isn't stable across runs even on identical frames. We
+    # match each pinned object to whichever candidate is *closest* to
+    # where it was pinned.
+    candidates_by_prompt: dict[str, list[DetectedObject]] = {}
+    for d in detections:
+        candidates_by_prompt.setdefault(d.name, []).append(d)
 
     worst_drift_px = 0.0
     worst_iou = 1.0
     worst_cosine = 1.0
 
     for ref in object_refs:
-        det = by_prompt.get(ref.prompt)
+        candidates = candidates_by_prompt.get(ref.prompt, [])
+        det = _match_to_pinned(ref, candidates)
         if det is None:
             findings.append(
                 Finding(
