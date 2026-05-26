@@ -17,8 +17,10 @@ Living document. Full context: [anvil_plan.md](anvil_plan.md).
 - [ ] Layer 0: LeRobot driver home-pose check (opt-in)
 
 ### Week 2 — structural + VLM judge
-- [x] Per-object detection via YOLO-World (substituted for SAM 3 to skip
-      Meta's HF gate; SAM 3 can be added as a sibling concrete impl later)
+- [x] Per-object detection via GroundingDINO (primary, accurate on
+      industrial vocab) + YOLO-World (fallback). Both substituted for
+      SAM 3 to skip Meta's HF gate; SAM 3 can land as a sibling concrete
+      impl later.
 - [x] Per-object IoU + DINOv3 region cosine
 - [ ] `robot_base` as a tracked object when robot enabled
 - [ ] Qwen3-VL-4B via Ollama

@@ -91,6 +91,11 @@ def test_load_object_detector_returns_none_when_load_fails(monkeypatch) -> None:
         raise RuntimeError("simulated [full] missing")
 
     monkeypatch.setattr(
+        "anvil.models.grounding_dino.GroundingDINODetector.load",
+        boom,
+        raising=True,
+    )
+    monkeypatch.setattr(
         "anvil.models.yolo_world.YOLOWorldDetector.load", boom, raising=True
     )
     assert load_object_detector() is None
@@ -99,7 +104,29 @@ def test_load_object_detector_returns_none_when_load_fails(monkeypatch) -> None:
 def test_load_object_detector_returns_none_when_module_import_fails(
     monkeypatch,
 ) -> None:
+    monkeypatch.setitem(sys.modules, "anvil.models.grounding_dino", None)
     monkeypatch.setitem(sys.modules, "anvil.models.yolo_world", None)
     assert load_object_detector() is None
+
+
+def test_load_object_detector_falls_back_to_yolo_world(monkeypatch) -> None:
+    """When GroundingDINO fails to load, factory should still return YOLOWorld."""
+
+    def boom(self: object) -> None:
+        raise RuntimeError("simulated GroundingDINO failure")
+
+    monkeypatch.setattr(
+        "anvil.models.grounding_dino.GroundingDINODetector.load",
+        boom,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "anvil.models.yolo_world.YOLOWorldDetector.load",
+        lambda self: setattr(self, "_loaded", True),
+        raising=True,
+    )
+    det = load_object_detector()
+    assert det is not None
+    assert det.name == "yolo-world-v8s"
 
 
