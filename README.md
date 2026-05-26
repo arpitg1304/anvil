@@ -19,6 +19,29 @@ Anvil keeps your scene true.
 > **Status:** v0.1.0 in active development. Schema is the only stable surface;
 > CLI and internals will change until 0.1.0 ships.
 
+![Annotated diff image: reference frame on the left, drifted frame on the right, with red ArUco marker outlines showing rotation deltas and a header strip of scores](docs/img/sample_diff.jpg)
+
+> *An `anvil check` diff after the camera was rotated 1.5°: reference on the left, live frame on the right. Marker outlines turn red when their rotation delta exceeds threshold; the header strip carries the scene/lighting/pose scores and flags.*
+
+## Why Anvil
+
+Every team training imitation policies or world models hits the same wall:
+their policy generalizes worse than it should, and they can't tell whether
+the cause is the model, the demonstrations, or the **conditions under which
+the demos were collected**. Lighting drifted. The mat got nudged 4cm. Someone
+replaced the red cup with a slightly different red cup. The camera mount
+sagged 2° over a week of bumping.
+
+That stochasticity is invisible at collection time and only shows up as a
+15% drop in success rate three weeks later. By then, you can't tell which
+demos are contaminated.
+
+**Anvil's pitch:** treat the physical scene like source code. Pin a
+known-good version. Every session, run a cheap automated check. Block (or
+just tag) recording if drift exceeds threshold. Each episode gets stamped
+with its deviation report, so when your policy fails you can correlate
+failures with the conditions they were collected under.
+
 ## Install
 
 ```bash
@@ -62,69 +85,78 @@ anvil guard --against workspace \
 anvil-inspect            # localhost:7777, auto-opens the browser
 ```
 
+**Sample `anvil pin` output:**
+
+```text
+✓ Pinned workspace at ./.anvil/workspace
+  reference:     ./.anvil/workspace/reference.png
+  resolution:    1280x720
+  robot:         disabled
+  lighting:      mean lum=78.5, CCT=6398K
+  aruco:         4 marker(s) [0, 1, 2, 3]
+  embedder:      dinov3-vits16
+  keypoints:     disk (608 pts)
+  manifest_hash: sha256:4125757683071c468fa1a08a9c6feaaa96d56f7e...
+```
+
+**Sample `anvil check` output after a 1.5° camera rotation:**
+
+```text
+WARNING — pin workspace
+  scene_drift:               0.052 (embedder:dinov3-vits16)
+  lighting_drift:            0.002
+  max_camera_pose_drift_deg: 1.47
+  flags: camera_pose_drift
+  WARNING [L1 pose] Camera rotated ~1.48° vs pin (median across 4 markers;
+                    worst marker 1.51°).
+     fix: Re-level the camera mount, or repin if intentional.
+  WARNING [L2 pose] Camera rotated ~-1.47° vs pin (keypoint-derived from
+                    168/265 inlier matches).
+     fix: Re-level the camera mount, or repin if intentional.
+  WARNING [L2 pose] Camera shifted ~18.7px vs pin (dx=-8.5, dy=+16.7;
+                    keypoint-derived, 168/265 inliers).
+     fix: Check the camera mount — clamp, tripod, or arm may have slipped.
+  diff:          ./.anvil/workspace/diffs/diff_20260526T181757Z.png
+```
+
+Note how three independent signals agree: ArUco-derived rotation (Layer 1),
+keypoint-derived rotation (Layer 2), and translation (Layer 2). When real
+drift happens, the cascade triangulates on it instead of relying on a
+single signal.
+
 Add `--force` to `pin` to overwrite an existing reference. To validate the
 pin → check loop end-to-end (including a deliberate camera nudge), follow
-the sanity-check flow in [docs/aruco_setup.md](docs/aruco_setup.md#fix-in-place-then-sanity-check).
+the sanity-check flow in
+[docs/aruco_setup.md](docs/aruco_setup.md#fix-in-place-then-sanity-check).
 
-**Enable the `[full]` ML cascade (recommended).** The bare install gets
-you ArUco-based pose drift, colour-histogram scene drift, lighting, and
-the inspector — enough for catching gross changes on a CPU-only setup.
-The `[full]` extra layers the real ML on top:
+## Use cases
 
-- **DINOv3-ViT-S/16** for semantic `scene_drift` (`1 - cosine` of the
-  global CLS embedding) — catches object swaps and partial occlusion
-  that histograms miss. Auto-cascades to DINOv2-Small if the DINOv3 HF
-  gate hasn't been approved yet.
-- **DISK + LightGlue** (via kornia) for marker-free camera pose drift —
-  detects mount sag / twist / lateral slip without printed fiducials.
-- **GroundingDINO** (with YOLO-World fallback) for **named-object
-  tracking**: pin with `--object red_cube="red cube"`, and `check`
-  reports per-object IoU + DINOv3 region cosine vs the pin.
+**"Did the rig drift overnight?"**
+You walk in Monday morning, run `anvil check --against workspace`. Three
+seconds later: lighting and pose scores green, but `object_moved` fires on
+the test tube rack — it shifted 4cm. The diff PNG shows you the before/after
+side by side. Three minutes of investigation instead of three hours of
+contaminated recordings.
 
-```bash
-uv sync --extra full
-uv run --extra full hf auth login    # paste a read-scope HF token for DINOv3
-```
+**"Filter bad episodes out of an existing dataset."**
+After three weeks of collection you have 800 episodes and a model that
+fails on 40. `find my_dataset/anvil -name "*.anvil.json" | xargs grep
+lighting_shift` returns exactly those 40 — all collected the week the
+overhead lamp died. Anvil's sidecars made the correlation visible; without
+them the 40 were just unlucky.
 
-DINOv3 weights are gated — accept the licence at
-[facebook/dinov3-vits16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m)
-first. GroundingDINO, DISK, LightGlue, DINOv2, and YOLO-World are all
-ungated and download automatically on first use. `pin` and `check`
-print which backbones loaded under the `embedder:`, `keypoints:`, and
-`objects:` lines respectively.
+**"Reproducible rig setup across team members."**
+Commit your `.anvil/` directory to the team's data repo. Anyone with a
+checkout can run `anvil check --against workspace` against their copy of
+the rig and see exactly how it deviates from canonical — same thresholds,
+same metrics, same diff format. New team members get a Monday-morning
+checklist that the tool enforces, not a wiki page nobody reads.
 
-## Finding your camera
-
-Anvil takes a `--camera` argument that's an OpenCV index (`0`, `1`, …), a
-device path (`/dev/video0`), or an RTSP URL. Use your OS tooling to figure
-out which is which before pinning.
-
-**Linux (V4L2):**
-
-```bash
-ls /dev/video*                          # enumerate device nodes
-v4l2-ctl --list-devices                 # friendly names + node mapping (apt: v4l-utils)
-v4l2-ctl -d /dev/video0 --list-formats-ext   # supported resolutions + framerates
-ffplay /dev/video0                      # live preview (Ctrl-C to exit)
-```
-
-**macOS (AVFoundation):**
-
-```bash
-system_profiler SPCameraDataType                          # plain device list
-ffmpeg -f avfoundation -list_devices true -i ""           # AVFoundation indices
-ffplay -f avfoundation -framerate 30 -i 0                 # live preview from index 0
-```
-
-If multiple cameras show up, the OpenCV index usually matches enumeration
-order — try `--camera 0` first, then `1`, etc.
-
-**Optional but recommended for serious rigs:** print four ArUco fiducials
-and stick them at the workspace corners. See [docs/aruco_setup.md](docs/aruco_setup.md)
-for sizing, placement, and a printable generator one-liner. With markers
-in place, Anvil's cheap Layer 1 pose check works without any GPU; with
-the `[full]` extra installed, the more accurate DISK + LightGlue path
-runs on top and supersedes ArUco automatically.
+**"Catch drift before `lerobot record` runs."**
+`anvil guard --record-cmd "lerobot record ..." --dataset-dir ./data` runs
+check before invoking the recorder. On WARNING it asks; on FAILED it
+blocks. Episodes that do get recorded land with a sidecar JSON under
+`./data/anvil/`, so the same deviation context follows the data downstream.
 
 ## Inspector UI
 
@@ -161,25 +193,110 @@ my_dataset/
 
 The schema lives at [docs/metadata_schema.md](docs/metadata_schema.md) and
 is the stable contract with [Forge](https://github.com/arpitg1304/forge):
-filter episodes by drift after the fact (`forge filter ./my_dataset
-./clean --max-pose-drift-deg 1.0`), correlate policy failures with
-collection conditions, etc.
+filter episodes by drift after the fact (`forge filter ./my_dataset ./clean
+--max-pose-drift-deg 1.0`), correlate policy failures with collection
+conditions, etc.
 
 ## How it works
 
 A multi-layer cascade. Cheap checks gate expensive ones, so most checks
 finish in well under a second:
 
-1. **Layer 1** — histogram + lighting (CCT, luminance) + ArUco pose +
-   DINOv3 / DINOv2 / histogram-fallback scene drift.
-2. **Layer 2** — DISK + LightGlue marker-free camera pose drift +
-   GroundingDINO / YOLO-World named-object IoU + DINOv3 region cosine.
-3. **Layer 0** *(TBD)* — robot home-pose check via LeRobot joint state.
-4. **Layer 3** *(TBD)* — Qwen3-VL agent loop for open-world drift the
-   earlier layers couldn't resolve.
+```
+                    every anvil check
+                          │
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│ Layer 1 — fast path (~50ms, CPU)                        │
+│   • BGR histogram + symmetric chi-square distance       │
+│   • Lighting: mean luminance + McCamy CCT               │
+│   • ArUco fiducial pose (if markers placed)             │
+│   • DINOv3 / DINOv2 / histogram scene embedding         │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼ (when [full] is installed)
+┌─────────────────────────────────────────────────────────┐
+│ Layer 2 — structural path (~500ms, GPU)                 │
+│   • DISK + LightGlue → rigid-2D camera pose drift       │
+│     (rotation + translation, marker-free)               │
+│   • GroundingDINO / YOLO-World → named-object boxes     │
+│   • DINOv3 region cosine on each bbox crop              │
+└─────────────────────────────────────────────────────────┘
+                          │
+                          ▼ (TBD)
+┌─────────────────────────────────────────────────────────┐
+│ Layer 0 — robot home-pose check (joint-state diff)      │
+│ Layer 3 — Qwen3-VL agent for open-world drift           │
+└─────────────────────────────────────────────────────────┘
+```
+
+Output: an `EpisodeReport` JSON conforming to
+[docs/metadata_schema.md](docs/metadata_schema.md), exit code (0/1/2/3),
+and on `warning`/`failed` a side-by-side annotated diff PNG.
 
 See [docs/architecture.md](docs/architecture.md) and the full plan in
 [anvil_plan.md](anvil_plan.md).
+
+## Finding your camera
+
+Anvil takes a `--camera` argument that's an OpenCV index (`0`, `1`, …), a
+device path (`/dev/video0`), or an RTSP URL. Use your OS tooling to figure
+out which is which before pinning.
+
+**Linux (V4L2):**
+
+```bash
+ls /dev/video*                          # enumerate device nodes
+v4l2-ctl --list-devices                 # friendly names + node mapping (apt: v4l-utils)
+v4l2-ctl -d /dev/video0 --list-formats-ext   # supported resolutions + framerates
+ffplay /dev/video0                      # live preview (Ctrl-C to exit)
+```
+
+**macOS (AVFoundation):**
+
+```bash
+system_profiler SPCameraDataType                          # plain device list
+ffmpeg -f avfoundation -list_devices true -i ""           # AVFoundation indices
+ffplay -f avfoundation -framerate 30 -i 0                 # live preview from index 0
+```
+
+If multiple cameras show up, the OpenCV index usually matches enumeration
+order — try `--camera 0` first, then `1`, etc.
+
+**Optional but recommended for serious rigs:** print four ArUco fiducials
+and stick them at the workspace corners. See [docs/aruco_setup.md](docs/aruco_setup.md)
+for sizing, placement, and a printable generator one-liner. With markers
+in place, Anvil's cheap Layer 1 pose check works without any GPU; with
+the `[full]` extra installed, the more accurate DISK + LightGlue path
+runs on top and supersedes ArUco automatically.
+
+## Enable the `[full]` ML cascade (recommended)
+
+The bare install gets you ArUco pose, histogram scene drift, lighting,
+and the inspector — enough for catching gross changes on a CPU-only
+setup. The `[full]` extra layers real ML on top:
+
+- **DINOv3-ViT-S/16** for semantic `scene_drift` (`1 - cosine` of the
+  global CLS embedding) — catches object swaps and partial occlusion
+  that histograms miss. Auto-cascades to DINOv2-Small if the DINOv3 HF
+  gate hasn't been approved yet.
+- **DISK + LightGlue** (via kornia) for marker-free camera pose drift —
+  detects mount sag / twist / lateral slip without printed fiducials.
+- **GroundingDINO** (with YOLO-World fallback) for named-object
+  tracking: pin with `--object red_cube="red cube"`, and `check` reports
+  per-object IoU + DINOv3 region cosine vs the pin.
+
+```bash
+uv sync --extra full
+uv run --extra full hf auth login    # paste a read-scope HF token for DINOv3
+```
+
+DINOv3 weights are gated — accept the licence at
+[facebook/dinov3-vits16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vits16-pretrain-lvd1689m)
+first. GroundingDINO, DISK, LightGlue, DINOv2, and YOLO-World are all
+ungated and download automatically on first use. `pin` and `check` print
+which backbones loaded under the `embedder:`, `keypoints:`, and `objects:`
+lines respectively.
 
 ## Troubleshooting
 
