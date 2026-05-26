@@ -253,19 +253,12 @@ def _pick_best_match(
     ref: ObjectReference, candidates: list[DetectedObject]
 ) -> DetectedObject | None:
     """Mirror of ``layer2_structural._match_to_pinned`` so the diff shows the
-    same candidate the orchestrator picked. Kept local so this module stays
-    self-contained.
+    same candidate the orchestrator picked. Kept as a direct import to
+    avoid drift.
     """
-    if not candidates:
-        return None
-    rx, ry = ref.centroid
+    from anvil.layers.layer2_structural import _match_to_pinned
 
-    def score(d: DetectedObject) -> tuple[float, float]:
-        iou = _bbox_iou(ref.bbox, d.bbox)
-        dist_sq = (d.centroid[0] - rx) ** 2 + (d.centroid[1] - ry) ** 2
-        return (-iou, dist_sq)
-
-    return min(candidates, key=score)
+    return _match_to_pinned(ref, candidates)
 
 
 def _bbox_iou(
