@@ -250,3 +250,166 @@ def test_run_layer2_warns_when_match_count_too_low() -> None:
     # Should not have attempted a rotation finding under sparse-match regime.
     assert not any(f.issue == "rotation_drift" for f in out.findings)
     assert out.num_matches < 10
+
+
+# --- named-object orchestrator -----------------------------------------
+
+
+from anvil.layers.layer2_structural import (  # noqa: E402
+    ObjectReference,
+    compute_object_reference,
+    load_object_references,
+    object_reference_path,
+    run_layer2_objects,
+    save_object_reference,
+)
+from anvil.models.objects import DetectedObject, ObjectDetector  # noqa: E402
+
+
+class _StaticObjectDetector(ObjectDetector):
+    """Detector that returns a caller-supplied mapping ``prompt -> bbox``."""
+
+    name: ClassVar[str] = "static-stub"
+
+    def __init__(
+        self, results: dict[str, tuple[float, float, float, float]] | None = None
+    ) -> None:
+        self._results = results or {}
+
+    def load(self) -> None:
+        return None
+
+    def detect(
+        self,
+        frame: Frame,
+        prompts: list[str],
+        *,
+        confidence_threshold: float = 0.1,
+    ) -> list[DetectedObject]:
+        out: list[DetectedObject] = []
+        for p in prompts:
+            bbox = self._results.get(p)
+            if bbox is None:
+                continue
+            out.append(DetectedObject(name=p, bbox=bbox, confidence=0.95))
+        return out
+
+
+def test_object_reference_round_trip(tmp_path: Path) -> None:
+    ref = ObjectReference(
+        name="red_cube",
+        prompt="red cube",
+        bbox=(100.0, 200.0, 300.0, 400.0),
+        confidence=0.9,
+        image_hw=(480, 640),
+        detector_name="static-stub",
+        region_embedding=[0.5, 0.5, 0.5, 0.5],
+        embedder_name="stub-embedder",
+    )
+    saved = save_object_reference(ref, tmp_path)
+    assert saved == object_reference_path(tmp_path, "red_cube")
+    reloaded = load_object_references(tmp_path)
+    assert len(reloaded) == 1
+    assert reloaded[0] == ref
+
+
+def test_compute_object_reference_returns_none_when_not_detected() -> None:
+    det = _StaticObjectDetector(results={})
+    ref = compute_object_reference(
+        _blank_frame(), name="rack", prompt="test tube rack", detector=det
+    )
+    assert ref is None
+
+
+def test_compute_object_reference_captures_bbox() -> None:
+    det = _StaticObjectDetector(
+        results={"red cube": (10.0, 20.0, 110.0, 120.0)}
+    )
+    ref = compute_object_reference(
+        _blank_frame(), name="red_cube", prompt="red cube", detector=det
+    )
+    assert ref is not None
+    assert ref.bbox == (10.0, 20.0, 110.0, 120.0)
+    assert ref.detector_name == "static-stub"
+    assert ref.region_embedding == []  # no embedder passed
+
+
+def test_run_layer2_objects_clean_when_object_in_same_place(tmp_path: Path) -> None:
+    bbox = (100.0, 100.0, 300.0, 300.0)
+    det = _StaticObjectDetector(results={"red cube": bbox})
+    ref = compute_object_reference(
+        _blank_frame(), name="red_cube", prompt="red cube", detector=det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=det,
+        embedder=None,
+        thresholds=ThresholdSpec(),
+    )
+    assert out.findings == []
+    assert out.flags == []
+    assert out.min_object_iou == pytest.approx(1.0)
+
+
+def test_run_layer2_objects_flags_object_missing(tmp_path: Path) -> None:
+    pin_det = _StaticObjectDetector(
+        results={"red cube": (100.0, 100.0, 300.0, 300.0)}
+    )
+    check_det = _StaticObjectDetector(results={})  # nothing detected
+    ref = compute_object_reference(
+        _blank_frame(), name="red_cube", prompt="red cube", detector=pin_det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=check_det,
+        embedder=None,
+        thresholds=ThresholdSpec(),
+    )
+    assert "object_missing" in out.flags
+    missing = [f for f in out.findings if f.issue == "object_missing"]
+    assert len(missing) == 1
+    assert missing[0].subject == "red_cube"
+
+
+def test_run_layer2_objects_flags_position_drift(tmp_path: Path) -> None:
+    pin_det = _StaticObjectDetector(
+        results={"red cube": (100.0, 100.0, 300.0, 300.0)}
+    )
+    # Shift bbox so IoU drops below 0.5.
+    check_det = _StaticObjectDetector(
+        results={"red cube": (300.0, 100.0, 500.0, 300.0)}
+    )
+    ref = compute_object_reference(
+        _blank_frame(), name="red_cube", prompt="red cube", detector=pin_det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=check_det,
+        embedder=None,
+        thresholds=ThresholdSpec(min_object_iou=0.5),
+    )
+    assert "object_moved" in out.flags
+    pos = [f for f in out.findings if f.issue == "position_drift"]
+    assert len(pos) == 1
+    assert pos[0].evidence is not None
+    assert pos[0].evidence["iou"] < 0.5
+    assert out.max_object_drift_px > 100
+
+
+def test_run_layer2_objects_no_refs_returns_empty() -> None:
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[],
+        detector=_StaticObjectDetector(),
+        embedder=None,
+        thresholds=ThresholdSpec(),
+    )
+    assert out.findings == []
+    assert out.flags == []
+    assert out.num_objects_pinned == 0

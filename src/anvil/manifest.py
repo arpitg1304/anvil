@@ -79,6 +79,13 @@ class ThresholdSpec(BaseModel):
     # 15 px ≈ 1.2% of a 1280px frame — catches a camera mount slipping a
     # noticeable amount without tripping on keypoint detection jitter.
     max_camera_translation_px: NonNegFloat = 15.0
+    # Per-object IoU below this trips ``object_moved``. 0.5 is the usual
+    # detection cutoff — pixel-perfect alignment isn't needed for "did this
+    # cube move".
+    min_object_iou: UnitInterval = 0.5
+    # DINOv3 region cosine below this trips an appearance_drift finding
+    # (still under the ``object_moved`` flag, no new flag in v0.1).
+    min_object_appearance_cosine: UnitInterval = 0.85
 
 
 class Manifest(BaseModel):

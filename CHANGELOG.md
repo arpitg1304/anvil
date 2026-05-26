@@ -78,3 +78,31 @@ All notable changes to Anvil are documented here. Format loosely follows
 - 101 tests across schema, manifest, cameras, Layer 1, embedder,
   keypoints, Layer 2, CLI, and diff renderer. `mypy --strict` and `ruff`
   both clean across 22 source files.
+- `anvil.models.objects` — open-vocabulary object detector abstraction:
+  - `ObjectDetector` ABC + `DetectedObject` Pydantic type +
+    `load_object_detector()` factory.
+  - `YOLOWorldDetector` (Ultralytics YOLO-World v8s, ~75MB unrestricted
+    Tencent weights) concrete impl. Substituted for SAM 3 to ship a
+    per-object signal without Meta's HF gate; SAM 3 can land as a
+    sibling concrete impl when its release stabilizes.
+  - `[full]` extra now also pulls `ultralytics>=8.3`.
+- `anvil.layers.layer2_structural` — adds named-object workflow:
+  - `compute_object_reference` / `save_object_reference` /
+    `load_object_references` persist `objects/<name>.json` per the
+    plan's manifest layout, including a DINOv3 region-cosine embedding
+    of the bbox crop when an embedder is available.
+  - `run_layer2_objects` re-detects each pinned object, computes per-
+    object IoU + centroid delta + region cosine, and emits
+    `object_missing`, `position_drift`, or `appearance_drift` findings.
+    All three raise the existing `object_missing` or `object_moved`
+    flags — no flag-vocabulary change.
+- `pin --object NAME` (repeatable) names objects to track. Supports the
+  `name=prompt` form for cases where the desired text prompt differs
+  from the on-disk filename (e.g. `--object rack="test tube rack"`).
+- `pin --force` now also wipes `objects/` and `pose/` subdirectories so
+  re-pinning with a changed object set doesn't leave ghost JSONs. The
+  `diffs/` subdir is preserved across re-pins.
+- `ThresholdSpec` gains `min_object_iou` (0.5 default) and
+  `min_object_appearance_cosine` (0.85 default).
+- 115 tests across all layers, models, persistence, CLI, and diff
+  renderer. `mypy --strict` and `ruff` clean across 24 source files.
