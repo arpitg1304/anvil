@@ -41,9 +41,9 @@ src/anvil/
 ├── errors.py         # AnvilError hierarchy
 ├── cli.py            # Click app: pin / check / guard
 ├── cameras/          # Camera abstraction (webcam + file driver)
-├── layers/           # Vision cascade (layer1_fast.py done; 0/2/3 TBD)
+├── layers/           # Vision cascade (layer1_fast.py + layer2_structural.py done; 0/3 TBD)
 ├── robots/           # Robot drivers (TODO: lerobot, none)
-├── models/           # Embedder ABC + DINOv3/DINOv2 impls; sam3, vlm TBD
+├── models/           # Embedder + keypoint ABCs; DINOv3/DINOv2 + DISK/LightGlue; sam3, vlm TBD
 ├── agent/            # Smolagents loop (TODO, Week 2)
 └── server/           # FastAPI + HTMX inspector (TODO, Week 3)
 ```
@@ -104,15 +104,15 @@ section in [README.md](README.md).
 
 ## Next session priorities
 
-1. **Layer 2 keypoints — SuperPoint + LightGlue** for marker-free camera
-   pose drift. Make ArUco optional rather than required.
+1. **Layer 2 SAM3** (Week 2): named-object workflow, per-object IoU +
+   DINOv3 region cosine. Reuses the embedder ABC. This is what unlocks
+   "the test tube rack was removed" detection that global DINOv3 misses.
 2. **Layer 0 LeRobot driver** — `anvil.robots.{base,lerobot,none}`. Wire
    into `check` when `manifest.robot.enabled`. Joint-state diff against
-   pinned home; tolerance from `RobotSpec.tolerance_deg`.
-3. **Layer 2 SAM3** (Week 2): named-object workflow, per-object IoU +
-   DINOv3 region cosine. Reuses the embedder ABC.
-4. **Layer 3** (Week 2): Qwen3-VL agent via smolagents + Ollama.
-5. **Week 3**: `guard` subcommand + sidecar writer + FastAPI inspector.
+   pinned home; tolerance from `RobotSpec.tolerance_deg`. Skipped this
+   session at user request.
+3. **Layer 3** (Week 2): Qwen3-VL agent via smolagents + Ollama.
+4. **Week 3**: `guard` subcommand + sidecar writer + FastAPI inspector.
 
 ## When stuck or when reality diverges
 

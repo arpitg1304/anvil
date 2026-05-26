@@ -37,6 +37,13 @@ from anvil.layers.layer1_fast import (
     save_embedding_reference,
     save_lighting_reference,
 )
+from anvil.layers.layer2_structural import (
+    Layer2KeypointsOutput,
+    compute_keypoint_reference,
+    load_keypoint_reference,
+    run_layer2_keypoints,
+    save_keypoint_reference,
+)
 from anvil.manifest import (
     REFERENCE_IMAGE_FILENAME,
     CameraDriver,
@@ -50,6 +57,7 @@ from anvil.manifest import (
     save_manifest,
 )
 from anvil.models import load_embedder
+from anvil.models.keypoints import load_keypoint_pipeline
 from anvil.schema import (
     ANVIL_SCHEMA_VERSION,
     EpisodeReport,
@@ -202,6 +210,14 @@ def pin_cmd(
             save_embedding_reference(embedding_ref, pin_dir)
             embedder_name = embedder.name
 
+        keypoint_pipeline = load_keypoint_pipeline()
+        keypoint_detector_name: str | None = None
+        if keypoint_pipeline is not None:
+            detector, _matcher = keypoint_pipeline
+            keypoint_ref = compute_keypoint_reference(frame, detector)
+            save_keypoint_reference(keypoint_ref, pin_dir)
+            keypoint_detector_name = detector.name
+
         height, width = frame.shape[:2]
         manifest = Manifest(
             anvil_schema_version=ANVIL_SCHEMA_VERSION,
@@ -218,6 +234,8 @@ def pin_cmd(
             aruco_present=bool(aruco_ref.markers),
             embedding_present=embedder_name is not None,
             embedder_name=embedder_name,
+            keypoints_present=keypoint_detector_name is not None,
+            keypoint_detector_name=keypoint_detector_name,
         )
         save_manifest(manifest, pin_dir)
         manifest_hash = compute_manifest_hash(pin_dir)
@@ -238,6 +256,12 @@ def pin_cmd(
         _console.print(
             f"  embedder:      {embedder_name if embedder_name else 'histogram (fallback)'}"
         )
+        keypoints_line = (
+            f"{keypoint_detector_name} ({len(keypoint_ref.keypoints)} pts)"
+            if keypoint_detector_name is not None
+            else "disabled (no pipeline loaded)"
+        )
+        _console.print(f"  keypoints:     {keypoints_line}")
         _console.print(f"  manifest_hash: {manifest_hash}")
     except AnvilError as exc:
         _console.print(f"[bold red]✗[/] {exc}")
@@ -300,6 +324,10 @@ def check_cmd(
         aruco_ref = load_aruco_reference(pin_dir)
         embedding_ref = load_embedding_reference(pin_dir)
         embedder = load_embedder() if embedding_ref is not None else None
+        keypoint_ref = load_keypoint_reference(pin_dir)
+        keypoint_pipeline = (
+            load_keypoint_pipeline() if keypoint_ref is not None else None
+        )
 
         driver = camera_driver or manifest.camera.driver
         device = camera_device or manifest.camera.device
@@ -315,7 +343,31 @@ def check_cmd(
             embedder=embedder,
         )
 
-        status = _status_from_findings(layer1.findings)
+        layer2: Layer2KeypointsOutput | None = None
+        if keypoint_ref is not None and keypoint_pipeline is not None:
+            kp_detector, kp_matcher = keypoint_pipeline
+            layer2 = run_layer2_keypoints(
+                current_frame=frame,
+                keypoint_ref=keypoint_ref,
+                detector=kp_detector,
+                matcher=kp_matcher,
+                thresholds=manifest.thresholds,
+            )
+
+        # Merge findings + flags from both layers; Layer 2 wins the pose
+        # score when it ran successfully (more accurate than ArUco).
+        merged_findings = list(layer1.findings)
+        merged_flags = list(layer1.flags)
+        pose_drift_score = layer1.max_camera_pose_drift_deg
+        if layer2 is not None:
+            merged_findings.extend(layer2.findings)
+            for flag in layer2.flags:
+                if flag not in merged_flags:
+                    merged_flags.append(flag)
+            if layer2.num_matches >= 10:
+                pose_drift_score = layer2.abs_rotation_deg
+
+        status = _status_from_findings(merged_findings)
         report = EpisodeReport(
             anvil_schema_version=ANVIL_SCHEMA_VERSION,
             episode_id=episode_id,
@@ -331,11 +383,11 @@ def check_cmd(
                 scene_drift=layer1.scene_drift,
                 lighting_drift=layer1.lighting_drift,
                 max_object_drift_cm=0.0,
-                max_camera_pose_drift_deg=layer1.max_camera_pose_drift_deg,
+                max_camera_pose_drift_deg=pose_drift_score,
                 max_robot_joint_drift_deg=0.0,
             ),
-            flags=layer1.flags,
-            findings=layer1.findings,
+            flags=merged_flags,
+            findings=merged_findings,
             provenance=_provenance(),
         )
 
