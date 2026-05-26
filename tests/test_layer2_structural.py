@@ -571,6 +571,50 @@ def test_run_layer2_objects_prefers_iou_over_centroid_distance() -> None:
     assert out.min_object_iou > 0.5
 
 
+def test_run_layer2_objects_rejects_workspace_envelope() -> None:
+    """A huge envelope detection labeled as the prompt shouldn't win the match.
+
+    Real-rig regression: GroundingDINO returned a 1068x603 'test tube rack'
+    bbox covering the whole workspace alongside a 156x49 pin. The
+    enveloping bbox trivially overlapped the pin (IoU 0.01), beating
+    every non-overlapping smaller candidate under IoU-first matching.
+    Filter rejects candidates whose area differs from the pin's by
+    more than 4x.
+    """
+
+    class _EnvelopeDetector(_StaticObjectDetector):
+        def __init__(self) -> None:
+            super().__init__()
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            return [
+                # Workspace-wide envelope: very different size from pin,
+                # overlaps it trivially.
+                DetectedObject(
+                    name=prompts[0],
+                    bbox=(50.0, 50.0, 1200.0, 700.0),
+                    confidence=0.40,
+                ),
+            ]
+
+    pin_det = _StaticObjectDetector(results={"rack": (600.0, 400.0, 760.0, 450.0)})
+    ref = compute_object_reference(
+        _blank_frame(), name="rack", prompt="rack", detector=pin_det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=_EnvelopeDetector(),
+        embedder=None,
+        thresholds=ThresholdSpec(),
+    )
+    # Envelope rejected → treated as missing rather than a bogus match.
+    assert "object_missing" in out.flags
+    missing = [f for f in out.findings if f.issue == "object_missing"]
+    assert len(missing) == 1
+
+
 def test_run_layer2_objects_no_refs_returns_empty() -> None:
     out = run_layer2_objects(
         current_frame=_blank_frame(),

@@ -553,39 +553,68 @@ def _bbox_iou(
     return float(inter / union)
 
 
+_MAX_AREA_RATIO = 4.0
+"""Largest pin/candidate area ratio still considered the same object.
+
+Open-vocab detectors sometimes return an "envelope" bbox that swallows
+the entire scene under any of the supplied prompts ("test tube rack"
+labeling the whole workspace). Such envelopes trivially overlap any
+pinned bbox and would win IoU-first matching by default, even though
+they're semantically a different detection. 4x is loose enough to allow
+real model variability (the pin might have captured just the top of the
+rack while check sees the full rack) while rejecting workspace-wide
+envelopes.
+"""
+
+
+def _bbox_area(b: tuple[float, float, float, float]) -> float:
+    return max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+
+
+def _area_ratio_ok(a: float, b: float) -> bool:
+    if a <= 0.0 or b <= 0.0:
+        return False
+    return max(a, b) / min(a, b) <= _MAX_AREA_RATIO
+
+
 def _match_to_pinned(
     ref: ObjectReference, candidates: list[DetectedObject]
 ) -> DetectedObject | None:
     """Pick the candidate that best matches the pinned bbox.
 
-    Open-vocab detectors return multiple candidates per prompt on cluttered
-    scenes — and the same physical object often shows up at several
-    *scales* (a full bbox around the rack, a tight box around its slats,
-    etc.). Scoring on centroid distance alone can pick a tiny/skinny
-    sub-detection right next to the pin's center over a properly-sized
-    candidate slightly offset.
+    Two-step process:
 
-    Two-tier score: **highest IoU first**, centroid distance as
-    tiebreaker. IoU directly measures "same object, same place, similar
-    scale" so it's the primary signal. When all candidates have IoU=0
-    (the object truly moved out of its pinned region), the centroid
-    tiebreaker falls back to "where did it most likely go".
+    1. **Filter** candidates whose area is wildly different from the
+       pin's (ratio > ``_MAX_AREA_RATIO``). Rejects the "entire-scene
+       envelope" failure mode where the detector returns the whole
+       workspace as a "test tube rack" — that always wins IoU > 0 over
+       any real-but-offset candidate.
+    2. **Score** survivors by IoU first, centroid distance as tiebreaker.
+       Max IoU wins; when all survivors have IoU=0 (the object genuinely
+       moved out of its pinned region) the centroid tiebreaker falls
+       back to "where did it most likely go".
 
-    Returns ``None`` if no candidates were supplied (caller treats as
-    ``object_missing``).
+    Returns ``None`` when there are no candidates *or* every candidate
+    failed the area filter (caller treats either as ``object_missing``).
     """
     if not candidates:
+        return None
+    pin_area = _bbox_area(ref.bbox)
+    if pin_area <= 0.0:
+        return None
+    filtered = [
+        d for d in candidates if _area_ratio_ok(pin_area, _bbox_area(d.bbox))
+    ]
+    if not filtered:
         return None
     rx, ry = ref.centroid
 
     def score(d: DetectedObject) -> tuple[float, float]:
         iou = _bbox_iou(ref.bbox, d.bbox)
         dist_sq = (d.centroid[0] - rx) ** 2 + (d.centroid[1] - ry) ** 2
-        # min() picks the smallest tuple → max IoU first (via negation),
-        # then min distance.
         return (-iou, dist_sq)
 
-    return min(candidates, key=score)
+    return min(filtered, key=score)
 
 
 def run_layer2_objects(
