@@ -43,7 +43,7 @@ src/anvil/
 ├── cameras/          # Camera abstraction (webcam + file driver)
 ├── layers/           # Vision cascade (layer1_fast.py + layer2_structural.py done; 0/3 TBD)
 ├── robots/           # Robot drivers (TODO: lerobot, none)
-├── models/           # Embedder + keypoint ABCs; DINOv3/DINOv2 + DISK/LightGlue; sam3, vlm TBD
+├── models/           # Embedder + keypoint + object ABCs; DINOv3/DINOv2 + DISK/LightGlue + YOLO-World; vlm TBD
 ├── agent/            # Smolagents loop (TODO, Week 2)
 └── server/           # FastAPI + HTMX inspector (TODO, Week 3)
 ```
@@ -104,14 +104,18 @@ section in [README.md](README.md).
 
 ## Next session priorities
 
-1. **Layer 2 SAM3** (Week 2): named-object workflow, per-object IoU +
-   DINOv3 region cosine. Reuses the embedder ABC. This is what unlocks
-   "the test tube rack was removed" detection that global DINOv3 misses.
+1. **Layer 3** (Week 2): Qwen3-VL agent via smolagents + Ollama. Now that
+   Layer 2 produces real "this object moved / disappeared / changed
+   appearance" signals, the VLM has something concrete to disambiguate
+   on the borderline cases.
 2. **Layer 0 LeRobot driver** — `anvil.robots.{base,lerobot,none}`. Wire
    into `check` when `manifest.robot.enabled`. Joint-state diff against
-   pinned home; tolerance from `RobotSpec.tolerance_deg`. Skipped this
-   session at user request.
-3. **Layer 3** (Week 2): Qwen3-VL agent via smolagents + Ollama.
+   pinned home; tolerance from `RobotSpec.tolerance_deg`. Deferred at
+   user request earlier in dev.
+3. **SAM 3 as second `ObjectDetector` impl** — sibling to
+   `YOLOWorldDetector` once Meta's release is stable and we accept the HF
+   gate friction. Gives per-pixel masks instead of bboxes; appearance
+   cosine then runs on mask-cropped regions instead of bbox crops.
 4. **Week 3**: `guard` subcommand + sidecar writer + FastAPI inspector.
 
 ## When stuck or when reality diverges

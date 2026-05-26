@@ -39,10 +39,15 @@ from anvil.layers.layer1_fast import (
 )
 from anvil.layers.layer2_structural import (
     Layer2KeypointsOutput,
+    Layer2ObjectsOutput,
     compute_keypoint_reference,
+    compute_object_reference,
     load_keypoint_reference,
+    load_object_references,
     run_layer2_keypoints,
+    run_layer2_objects,
     save_keypoint_reference,
+    save_object_reference,
 )
 from anvil.manifest import (
     REFERENCE_IMAGE_FILENAME,
@@ -58,6 +63,7 @@ from anvil.manifest import (
 )
 from anvil.models import load_embedder
 from anvil.models.keypoints import load_keypoint_pipeline
+from anvil.models.objects import load_object_detector
 from anvil.schema import (
     ANVIL_SCHEMA_VERSION,
     EpisodeReport,
@@ -168,6 +174,16 @@ def cli() -> None:
     default=False,
     help="Overwrite an existing pin with the same name.",
 )
+@click.option(
+    "--object",
+    "objects",
+    multiple=True,
+    help=(
+        "Named object to track at check time (e.g. 'red_cube'). May be passed "
+        "multiple times. Uses the name as the text prompt; for a different "
+        "prompt write 'name=prompt' (e.g. 'rack=test tube rack')."
+    ),
+)
 def pin_cmd(
     name: str,
     camera_device: str,
@@ -176,6 +192,7 @@ def pin_cmd(
     robot: bool,
     pin_root: Path | None,
     force: bool,
+    objects: tuple[str, ...],
 ) -> None:
     """Capture the current scene as a reference manifest."""
     try:
@@ -186,9 +203,15 @@ def pin_cmd(
                 "Use --force to overwrite or pick a different --name."
             )
         if pin_dir.exists() and force:
+            import shutil
+
             for child in pin_dir.iterdir():
                 if child.is_file():
                     child.unlink()
+                elif child.is_dir() and child.name != "diffs":
+                    # Diff history survives a re-pin; everything else is
+                    # regenerated and stale entries shouldn't persist.
+                    shutil.rmtree(child)
         pin_dir.mkdir(parents=True, exist_ok=True)
 
         with open_camera(camera_driver, camera_device) as cam:
@@ -218,6 +241,35 @@ def pin_cmd(
             save_keypoint_reference(keypoint_ref, pin_dir)
             keypoint_detector_name = detector.name
 
+        # Named-object refs (YOLO-World + DINOv3 region embedding).
+        object_names: list[str] = []
+        object_detector_name: str | None = None
+        if objects:
+            object_detector = load_object_detector()
+            if object_detector is None:
+                _console.print(
+                    "[yellow]![/] --object was passed but no detector loaded; "
+                    "install the [full] extra. Continuing without object refs."
+                )
+            else:
+                object_detector_name = object_detector.name
+                for raw in objects:
+                    if "=" in raw:
+                        obj_name, _, prompt = raw.partition("=")
+                    else:
+                        obj_name, prompt = raw, raw.replace("_", " ")
+                    ref = compute_object_reference(
+                        frame, obj_name, prompt, object_detector, embedder
+                    )
+                    if ref is None:
+                        _console.print(
+                            f"[yellow]![/] {obj_name!r} (prompt {prompt!r}) "
+                            "not detected in pin frame; skipping."
+                        )
+                        continue
+                    save_object_reference(ref, pin_dir)
+                    object_names.append(obj_name)
+
         height, width = frame.shape[:2]
         manifest = Manifest(
             anvil_schema_version=ANVIL_SCHEMA_VERSION,
@@ -236,6 +288,7 @@ def pin_cmd(
             embedder_name=embedder_name,
             keypoints_present=keypoint_detector_name is not None,
             keypoint_detector_name=keypoint_detector_name,
+            objects=object_names,
         )
         save_manifest(manifest, pin_dir)
         manifest_hash = compute_manifest_hash(pin_dir)
@@ -262,6 +315,14 @@ def pin_cmd(
             else "disabled (no pipeline loaded)"
         )
         _console.print(f"  keypoints:     {keypoints_line}")
+        if objects:
+            objects_line = (
+                f"{object_detector_name} — {len(object_names)}/{len(objects)} "
+                "located"
+                if object_detector_name is not None
+                else "no detector loaded"
+            )
+            _console.print(f"  objects:       {objects_line} {object_names}")
         _console.print(f"  manifest_hash: {manifest_hash}")
     except AnvilError as exc:
         _console.print(f"[bold red]✗[/] {exc}")
@@ -328,6 +389,8 @@ def check_cmd(
         keypoint_pipeline = (
             load_keypoint_pipeline() if keypoint_ref is not None else None
         )
+        object_refs = load_object_references(pin_dir)
+        object_detector = load_object_detector() if object_refs else None
 
         driver = camera_driver or manifest.camera.driver
         device = camera_device or manifest.camera.device
@@ -354,8 +417,18 @@ def check_cmd(
                 thresholds=manifest.thresholds,
             )
 
-        # Merge findings + flags from both layers; Layer 2 wins the pose
-        # score when it ran successfully (more accurate than ArUco).
+        layer2_objects: Layer2ObjectsOutput | None = None
+        if object_refs and object_detector is not None:
+            layer2_objects = run_layer2_objects(
+                current_frame=frame,
+                object_refs=object_refs,
+                detector=object_detector,
+                embedder=embedder,
+                thresholds=manifest.thresholds,
+            )
+
+        # Merge findings + flags from all layers; Layer 2 keypoints wins
+        # the pose score when it ran successfully (more accurate than ArUco).
         merged_findings = list(layer1.findings)
         merged_flags = list(layer1.flags)
         pose_drift_score = layer1.max_camera_pose_drift_deg
@@ -366,6 +439,11 @@ def check_cmd(
                     merged_flags.append(flag)
             if layer2.num_matches >= 10:
                 pose_drift_score = layer2.abs_rotation_deg
+        if layer2_objects is not None:
+            merged_findings.extend(layer2_objects.findings)
+            for flag in layer2_objects.flags:
+                if flag not in merged_flags:
+                    merged_flags.append(flag)
 
         status = _status_from_findings(merged_findings)
         report = EpisodeReport(
