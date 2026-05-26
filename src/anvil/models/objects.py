@@ -81,19 +81,33 @@ class ObjectDetector(ABC):
 def load_object_detector() -> ObjectDetector | None:
     """Return the best available detector, or ``None`` if nothing loads.
 
-    Today only YOLO-World v8s is wired up. Adding a SAM 3 concrete
-    later is a single ``try`` block here.
+    Cascade: GroundingDINO (accurate on open-vocab industrial prompts,
+    heavier) → YOLO-World (lighter, COCO-friendly, fallback when
+    GroundingDINO can't load). SAM 3 can slot in as a third concrete
+    impl when its release stabilizes.
     """
+    candidates: list[type[ObjectDetector]] = []
+    try:
+        from anvil.models.grounding_dino import GroundingDINODetector
+
+        candidates.append(GroundingDINODetector)
+    except ImportError:
+        pass
     try:
         from anvil.models.yolo_world import YOLOWorldDetector
+
+        candidates.append(YOLOWorldDetector)
     except ImportError:
-        return None
-    detector = YOLOWorldDetector()
-    try:
-        detector.load()
-    except Exception:
-        return None
-    return detector
+        pass
+
+    for cls in candidates:
+        detector = cls()
+        try:
+            detector.load()
+        except Exception:
+            continue
+        return detector
+    return None
 
 
 __all__ = ["DetectedObject", "ObjectDetector", "load_object_detector"]
