@@ -45,5 +45,36 @@ All notable changes to Anvil are documented here. Format loosely follows
   kwargs; `pin` saves `reference_features.npz`, `check` reuses it.
 - `Manifest` gains `embedding_present: bool` and `embedder_name: str | None`
   for round-trip provenance.
-- 84 tests across schema, manifest, cameras, Layer 1, embedder, and CLI.
-  `mypy --strict` and `ruff` both clean across 17 source files.
+- `anvil.models.keypoints` — pluggable keypoint detector + matcher
+  abstraction:
+  - `KeypointDetector` / `KeypointMatcher` ABCs + `KeypointSet` / `MatchResult`
+    Pydantic types + `load_keypoint_pipeline()` factory.
+  - `DISKDetector` and `LightGlueDISKMatcher` concrete impls via kornia.
+    DISK substitutes for SuperPoint (kornia 0.8 dropped SuperPoint; DISK is
+    the same family of CNN keypoint+descriptor method with weights kornia
+    distributes directly — unrestricted, no HF gate).
+  - `[full]` extra now also pulls `kornia>=0.8`.
+- `anvil.layers.layer2_structural` — Layer 2 structural orchestrator:
+  - `compute_keypoint_reference` / `save_keypoint_reference` /
+    `load_keypoint_reference` persist N×128 DISK descriptors and keypoint
+    coordinates to `pose/keypoints.npz`.
+  - `run_layer2_keypoints` detects + matches keypoints, RANSAC-fits a
+    rigid 2D transform via `cv2.estimateAffinePartial2D`, and reports
+    rotation + translation + inlier counts. Emits its own
+    `rotation_drift` finding (layer=2, `source: lightglue-disk`) when
+    over threshold.
+  - Also emits a `translation_drift` finding when the recovered
+    translation magnitude exceeds `thresholds.max_camera_translation_px`
+    (default 15 px). Catches the "camera mount slipped vertically"
+    case that pure rotation thresholding misses — both findings raise
+    the existing `camera_pose_drift` flag, no schema change required.
+- `check` runs Layer 2 after Layer 1 when keypoints are pinned and the
+  pipeline loads. Layer 2's rotation supersedes Layer 1's ArUco-derived
+  pose score in the final report (more accurate, no fiducials needed).
+- `Manifest` gains `keypoints_present: bool` and
+  `keypoint_detector_name: str | None`.
+- `pin` output now includes a `keypoints:` line; `<pin>/pose/keypoints.npz`
+  is written alongside the other reference artifacts.
+- 101 tests across schema, manifest, cameras, Layer 1, embedder,
+  keypoints, Layer 2, CLI, and diff renderer. `mypy --strict` and `ruff`
+  both clean across 22 source files.
