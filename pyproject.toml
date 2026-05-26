@@ -31,14 +31,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Heavy ML stack — DINOv3 / SAM3 / VLM. SAM3 + VLM land in Week 2+.
-# Pillow + torchvision are required at runtime by HF AutoImageProcessor for
-# vision models; transformers doesn't declare them as hard deps.
+# Heavy ML stack — DINOv3 / DISK + LightGlue / SAM3 / VLM. SAM3 + VLM land in
+# Week 2+. Pillow + torchvision are required at runtime by HF
+# AutoImageProcessor for vision models; transformers doesn't declare them as
+# hard deps. kornia carries DISK + LightGlue weights and the LAF helpers
+# Layer 2 needs.
 full = [
     "torch>=2.4",
     "torchvision>=0.19",
     "transformers>=4.45",
     "pillow>=10",
+    "kornia>=0.8",
 ]
 
 [project.scripts]
