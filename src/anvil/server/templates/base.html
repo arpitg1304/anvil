@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Anvil Inspector{% endblock %}</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+<nav class="bg-slate-900 text-white px-6 py-4 shadow">
+  <div class="max-w-6xl mx-auto flex items-baseline gap-4">
+    <a href="/" class="text-xl font-bold tracking-wide">ANVIL</a>
+    <span class="text-slate-400 text-sm">{% block subtitle %}pin inspector{% endblock %}</span>
+  </div>
+</nav>
+<main class="max-w-6xl mx-auto px-6 py-8">
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>
