@@ -283,6 +283,8 @@ def run_layer2_keypoints(
     inliers = int(inlier_mask.sum()) if inlier_mask is not None else 0
 
     abs_rotation = abs(rotation_deg)
+    translation_magnitude = float(np.hypot(translation[0], translation[1]))
+
     if abs_rotation > thresholds.max_camera_pose_drift_deg:
         severity: Severity = (
             "critical" if abs_rotation >= _KEYPOINT_POSE_CRITICAL_DEG else "warning"
@@ -310,7 +312,39 @@ def run_layer2_keypoints(
                 },
             )
         )
-        flags.append("camera_pose_drift")
+        if "camera_pose_drift" not in flags:
+            flags.append("camera_pose_drift")
+
+    if translation_magnitude > thresholds.max_camera_translation_px:
+        # Translation is reported separately from rotation: a camera that
+        # slips down without twisting (loose ceiling mount, bumped tripod
+        # leg) trips this but not the rotation finding.
+        findings.append(
+            Finding(
+                id=_next_id(findings),
+                severity="warning",
+                layer=2,
+                component="pose",
+                subject="camera",
+                issue="translation_drift",
+                detail=(
+                    f"Camera shifted ~{translation_magnitude:.1f}px vs pin "
+                    f"(dx={translation[0]:+.1f}, dy={translation[1]:+.1f}; "
+                    f"keypoint-derived, {inliers}/{matches.count} inliers)."
+                ),
+                fix="Check the camera mount — clamp, tripod, or arm may have slipped.",
+                evidence={
+                    "translation_px": list(translation),
+                    "translation_magnitude_px": translation_magnitude,
+                    "rotation_delta_deg": rotation_deg,
+                    "num_matches": matches.count,
+                    "num_inliers": inliers,
+                    "source": "lightglue-disk",
+                },
+            )
+        )
+        if "camera_pose_drift" not in flags:
+            flags.append("camera_pose_drift")
 
     return Layer2KeypointsOutput(
         rotation_deg=rotation_deg,
