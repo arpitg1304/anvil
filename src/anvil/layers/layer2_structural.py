@@ -415,6 +415,33 @@ def _crop_bbox(frame: Frame, bbox: tuple[float, float, float, float]) -> Frame |
     return frame[y1:y2, x1:x2].copy()
 
 
+def _build_object_reference(
+    frame: Frame,
+    name: str,
+    prompt: str,
+    match: DetectedObject,
+    detector_name: str,
+    embedder: GlobalEmbedder | None,
+) -> ObjectReference:
+    region_embedding: list[float] = []
+    embedder_name: str | None = None
+    if embedder is not None:
+        crop = _crop_bbox(frame, match.bbox)
+        if crop is not None:
+            region_embedding = embedder.embed(crop).astype(np.float32).tolist()
+            embedder_name = embedder.name
+    return ObjectReference(
+        name=name,
+        prompt=prompt,
+        bbox=match.bbox,
+        confidence=match.confidence,
+        image_hw=frame.shape[:2],
+        detector_name=detector_name,
+        region_embedding=region_embedding,
+        embedder_name=embedder_name,
+    )
+
+
 def compute_object_reference(
     frame: Frame,
     name: str,
@@ -433,23 +460,51 @@ def compute_object_reference(
     )
     if match is None:
         return None
-    region_embedding: list[float] = []
-    embedder_name: str | None = None
-    if embedder is not None:
-        crop = _crop_bbox(frame, match.bbox)
-        if crop is not None:
-            region_embedding = embedder.embed(crop).astype(np.float32).tolist()
-            embedder_name = embedder.name
-    return ObjectReference(
-        name=name,
-        prompt=prompt,
-        bbox=match.bbox,
-        confidence=match.confidence,
-        image_hw=frame.shape[:2],
-        detector_name=detector.name,
-        region_embedding=region_embedding,
-        embedder_name=embedder_name,
+    return _build_object_reference(
+        frame, name, prompt, match, detector.name, embedder
     )
+
+
+def compute_object_references(
+    frame: Frame,
+    objects: list[tuple[str, str]],
+    detector: ObjectDetector,
+    embedder: GlobalEmbedder | None = None,
+) -> list[tuple[str, ObjectReference | None]]:
+    """Detect every named object in a single detector pass.
+
+    ``objects`` is a list of ``(name, prompt)`` pairs. Returns one entry per
+    input pair, in order, with ``None`` for objects the detector didn't find.
+
+    Two named objects sharing the same prompt will bind to the *same* detected
+    bbox (the best-confidence instance of that prompt). For multi-instance
+    tracking — two grippers, three test tubes — use distinct prompts.
+
+    Calling the detector once with all prompts (instead of once per object)
+    is both a perf win (single CLIP text encode) and dodges an Ultralytics
+    8.4 bug where repeated set_classes on a CUDA model leaves text tokens
+    on CPU.
+    """
+    if not objects:
+        return []
+    unique_prompts = list(dict.fromkeys(prompt for _name, prompt in objects))
+    detections = detector.detect(frame, unique_prompts)
+    by_prompt = {d.name: d for d in detections}
+    out: list[tuple[str, ObjectReference | None]] = []
+    for name, prompt in objects:
+        match = by_prompt.get(prompt)
+        if match is None:
+            out.append((name, None))
+            continue
+        out.append(
+            (
+                name,
+                _build_object_reference(
+                    frame, name, prompt, match, detector.name, embedder
+                ),
+            )
+        )
+    return out
 
 
 def save_object_reference(ref: ObjectReference, pin_dir: Path) -> Path:
@@ -642,6 +697,7 @@ __all__ = [
     "ObjectReference",
     "compute_keypoint_reference",
     "compute_object_reference",
+    "compute_object_references",
     "keypoints_path",
     "load_keypoint_reference",
     "load_object_references",

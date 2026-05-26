@@ -41,7 +41,7 @@ from anvil.layers.layer2_structural import (
     Layer2KeypointsOutput,
     Layer2ObjectsOutput,
     compute_keypoint_reference,
-    compute_object_reference,
+    compute_object_references,
     load_keypoint_reference,
     load_object_references,
     run_layer2_keypoints,
@@ -253,15 +253,21 @@ def pin_cmd(
                 )
             else:
                 object_detector_name = object_detector.name
+                object_pairs: list[tuple[str, str]] = []
                 for raw in objects:
                     if "=" in raw:
                         obj_name, _, prompt = raw.partition("=")
                     else:
                         obj_name, prompt = raw, raw.replace("_", " ")
-                    ref = compute_object_reference(
-                        frame, obj_name, prompt, object_detector, embedder
-                    )
+                    object_pairs.append((obj_name, prompt))
+                # Single detector pass for all named objects — see
+                # compute_object_references for the perf + correctness rationale.
+                results = compute_object_references(
+                    frame, object_pairs, object_detector, embedder
+                )
+                for obj_name, ref in results:
                     if ref is None:
+                        prompt = dict(object_pairs)[obj_name]
                         _console.print(
                             f"[yellow]![/] {obj_name!r} (prompt {prompt!r}) "
                             "not detected in pin frame; skipping."

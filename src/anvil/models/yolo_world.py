@@ -28,12 +28,19 @@ class YOLOWorldDetector(ObjectDetector):
     def __init__(self) -> None:
         self._model: Any = None
         self._loaded: bool = False
+        # Cache of the last class list set on the underlying model. Skipping
+        # redundant set_classes calls is a perf win (CLIP text encoding is
+        # ~100ms) and also dodges an Ultralytics 8.4 bug where repeated
+        # set_classes calls leave the CLIP text tokens on CPU while the
+        # rest of the model is on CUDA, causing a tensor-device mismatch
+        # on the second call.
+        self._current_classes: list[str] | None = None
 
     def load(self) -> None:
         if self._loaded:
             return
         try:
-            from ultralytics import YOLOWorld
+            from ultralytics import YOLOWorld  # type: ignore[attr-defined]
         except ImportError as exc:
             raise RuntimeError(
                 "YOLO-World requires the [full] extra. "
@@ -50,9 +57,10 @@ class YOLOWorldDetector(ObjectDetector):
             self.load()
         if not prompts:
             return []
-        # Ultralytics' set_classes mutates the model's class list — safe
-        # because we always pass the full prompt set we want this run.
-        self._model.set_classes(list(prompts))
+        prompts_list = list(prompts)
+        if prompts_list != self._current_classes:
+            self._model.set_classes(prompts_list)
+            self._current_classes = prompts_list
         results = self._model.predict(frame, verbose=False, conf=confidence_threshold)
         if not results:
             return []
