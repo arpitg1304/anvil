@@ -187,7 +187,10 @@ def _annotate_pose(
         cx, cy = quad.mean(axis=0)
         label = f"ID {marker_id}"
         if delta is not None:
-            label += f"  Δ{delta:+.2f}°"
+            # cv2.putText with FONT_HERSHEY_SIMPLEX is ASCII-only — Unicode
+            # glyphs like Delta or the degree sign render as '??'. Stick to
+            # ASCII labels here; the JSON sidecar keeps the precise number.
+            label += f"  d={delta:+.2f}deg"
         _draw_label(panel, label, (int(cx) - 80, int(cy) - 12))
     return panel
 
@@ -328,7 +331,7 @@ def _prepend_header(body: Frame, *, layer1: Layer1Output, pin_name: str) -> Fram
         f"pin: {pin_name}   "
         f"scene_drift: {layer1.scene_drift:.3f} ({layer1.scene_drift_source})   "
         f"lighting_drift: {layer1.lighting_drift:.3f}   "
-        f"pose_drift: {layer1.max_camera_pose_drift_deg:.2f}°"
+        f"pose_drift: {layer1.max_camera_pose_drift_deg:.2f}deg"
     )
     flags_line = (
         f"flags: {', '.join(layer1.flags)}" if layer1.flags else "flags: (none)"
