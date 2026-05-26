@@ -202,7 +202,13 @@ def detect_aruco_markers(
     frame: Frame, dictionary_name: str = DEFAULT_ARUCO_DICTIONARY
 ) -> list[ArucoMarker]:
     dictionary = cv2.aruco.getPredefinedDictionary(_resolve_aruco_dict(dictionary_name))
-    detector = cv2.aruco.ArucoDetector(dictionary, cv2.aruco.DetectorParameters())
+    params = cv2.aruco.DetectorParameters()
+    # Default corner detection has ~0.5px jitter. Subpixel refinement drops it
+    # to ~0.05px, which directly cuts the orientation-delta noise floor — the
+    # difference between false-positive 1° drift on a static scene and real
+    # sag detection at 0.5°. Costs <1ms per frame.
+    params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    detector = cv2.aruco.ArucoDetector(dictionary, params)
     corners, ids, _ = detector.detectMarkers(frame)
     if ids is None or len(ids) == 0:
         return []
@@ -235,20 +241,36 @@ def compute_aruco_reference(
 
 def _aruco_pose_drift(
     reference: list[ArucoMarker], current: list[ArucoMarker]
-) -> tuple[float, list[int]]:
-    """Returns (max rotation delta in degrees, sorted list of missing ref IDs)."""
+) -> tuple[float, list[int], dict[int, float]]:
+    """Aggregate per-marker rotation deltas into a single drift score.
+
+    Returns ``(score, missing_ids, per_marker)``:
+
+    * ``score`` — **median** absolute rotation delta across visible markers,
+      in degrees. Median (not max) so a single jittery marker — common when
+      one tag is partially shadowed or near the image edge — doesn't
+      dominate. Real camera rotation moves all markers together, so for
+      genuine drift median ≈ max.
+    * ``missing_ids`` — pinned marker ids not seen in the current frame.
+    * ``per_marker`` — full ``{id: signed_delta_deg}`` map for diagnostics.
+      Surfaced in the finding's ``evidence`` so the operator can spot
+      which marker is the outlier.
+    """
     current_by_id = {m.id: m for m in current}
     missing = sorted(m.id for m in reference if m.id not in current_by_id)
-    deltas: list[float] = []
+    per_marker: dict[int, float] = {}
     for ref_marker in reference:
         cur_marker = current_by_id.get(ref_marker.id)
         if cur_marker is None:
             continue
         raw = cur_marker.orientation_deg - ref_marker.orientation_deg
-        # Wrap to [-180, 180].
         normalized = ((raw + 180.0) % 360.0) - 180.0
-        deltas.append(abs(normalized))
-    return (max(deltas, default=0.0), missing)
+        per_marker[ref_marker.id] = float(normalized)
+    if not per_marker:
+        return (0.0, missing, per_marker)
+    abs_deltas = [abs(v) for v in per_marker.values()]
+    score = float(np.median(abs_deltas))
+    return (score, missing, per_marker)
 
 
 # --- orchestrator --------------------------------------------------------
@@ -327,9 +349,12 @@ def run_layer1(
 
     # --- ArUco / camera pose ---
     pose_drift_deg = 0.0
+    per_marker_deltas: dict[int, float] = {}
     if aruco_ref.markers:
         current_markers = detect_aruco_markers(current_frame, aruco_ref.dictionary)
-        pose_drift_deg, missing_ids = _aruco_pose_drift(aruco_ref.markers, current_markers)
+        pose_drift_deg, missing_ids, per_marker_deltas = _aruco_pose_drift(
+            aruco_ref.markers, current_markers
+        )
         if missing_ids:
             findings.append(
                 Finding(
@@ -350,6 +375,10 @@ def run_layer1(
             pose_severity: Severity = (
                 "critical" if pose_drift_deg >= _CAMERA_POSE_CRITICAL_DEG else "warning"
             )
+            abs_per_marker = {mid: abs(v) for mid, v in per_marker_deltas.items()}
+            max_marker_delta = (
+                max(abs_per_marker.values()) if abs_per_marker else 0.0
+            )
             findings.append(
                 Finding(
                     id=_next_id(findings),
@@ -359,11 +388,16 @@ def run_layer1(
                     subject="camera",
                     issue="rotation_drift",
                     detail=(
-                        f"Camera rotated ~{pose_drift_deg:.2f} degrees vs pin "
-                        "(ArUco-derived)."
+                        f"Camera rotated ~{pose_drift_deg:.2f}° vs pin (median "
+                        f"across {len(per_marker_deltas)} markers; worst "
+                        f"marker {max_marker_delta:.2f}°)."
                     ),
                     fix="Re-level the camera mount, or repin if intentional.",
-                    evidence={"rotation_delta_deg": pose_drift_deg},
+                    evidence={
+                        "rotation_delta_deg": pose_drift_deg,
+                        "per_marker_delta_deg": per_marker_deltas,
+                        "max_marker_delta_deg": max_marker_delta,
+                    },
                 )
             )
             if "camera_pose_drift" not in flags:

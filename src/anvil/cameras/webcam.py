@@ -9,6 +9,14 @@ import cv2
 from anvil.cameras.base import Camera, Frame
 from anvil.errors import CameraError
 
+# Many UVC webcams (Logitech BRIO in particular) return empty frames for the
+# first few reads while the V4L2 buffer pipeline spins up — and the first 10+
+# valid frames are themselves not stable because auto-exposure / white
+# balance / auto-focus are still converging. 15 frames ≈ 500ms at 30fps,
+# enough for AE to settle on most UVC cameras without making check feel
+# noticeably slower.
+_WARMUP_FRAMES = 15
+
 
 class WebcamCamera(Camera):
     """OpenCV VideoCapture-backed driver.
@@ -42,6 +50,8 @@ class WebcamCamera(Camera):
             width, height = self._resolution
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(width))
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(height))
+        for _ in range(_WARMUP_FRAMES):
+            cap.read()
         self._cap = cap
 
     def grab(self) -> Frame:
