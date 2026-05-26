@@ -516,6 +516,61 @@ def test_run_layer2_objects_picks_candidate_closest_to_pin() -> None:
     assert out.min_object_iou > 0.5
 
 
+def test_run_layer2_objects_prefers_iou_over_centroid_distance() -> None:
+    """A tight nearby sub-detection shouldn't outscore a properly-sized
+    overlapping candidate.
+
+    Regression: with centroid-only matching, a small box right at the pin's
+    centroid (IoU ~0 because of size mismatch) won over a properly-sized
+    candidate offset by a few pixels (IoU ~0.9). The user reported this as
+    'IoU=0.01 but only 14px moved' — visibly different bboxes with similar
+    centers.
+    """
+
+    class _DualCandidateDetector(_StaticObjectDetector):
+        def __init__(self, pin_bbox: tuple[float, float, float, float]) -> None:
+            super().__init__()
+            self._pin_bbox = pin_bbox
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            x1, y1, x2, y2 = self._pin_bbox
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            return [
+                # Tiny tight box at the pin's exact centroid — high conf,
+                # but barely overlaps the actual pinned bbox.
+                DetectedObject(
+                    name=prompts[0],
+                    bbox=(cx - 5, cy - 5, cx + 5, cy + 5),
+                    confidence=0.80,
+                ),
+                # Properly-sized box offset by ~10px — lower conf, but
+                # high IoU vs the pin.
+                DetectedObject(
+                    name=prompts[0],
+                    bbox=(x1 + 10, y1 + 5, x2 + 10, y2 + 5),
+                    confidence=0.40,
+                ),
+            ]
+
+    pin_bbox = (100.0, 100.0, 300.0, 300.0)
+    pin_det = _StaticObjectDetector(results={"rack": pin_bbox})
+    ref = compute_object_reference(
+        _blank_frame(), name="rack", prompt="rack", detector=pin_det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=_DualCandidateDetector(pin_bbox),
+        embedder=None,
+        thresholds=ThresholdSpec(min_object_iou=0.5),
+    )
+    # The properly-sized offset candidate has IoU > 0.5 against the pin,
+    # so the test passes and no object_moved fires.
+    assert out.flags == []
+    assert out.min_object_iou > 0.5
+
+
 def test_run_layer2_objects_no_refs_returns_empty() -> None:
     out = run_layer2_objects(
         current_frame=_blank_frame(),

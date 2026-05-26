@@ -533,29 +533,6 @@ def load_object_references(pin_dir: Path) -> list[ObjectReference]:
     return refs
 
 
-def _match_to_pinned(
-    ref: ObjectReference, candidates: list[DetectedObject]
-) -> DetectedObject | None:
-    """Pick the candidate whose bbox centroid is closest to the pin's.
-
-    Open-vocab detectors return multiple candidates per prompt on cluttered
-    scenes (slats, edges, brackets all look like "rack"); the highest-conf
-    candidate flips between near-identical frames because the score
-    differences are within noise. Matching by spatial prior — "where was
-    this object pinned?" — is stable across runs.
-
-    Returns ``None`` if no candidates were supplied (caller treats as
-    ``object_missing``).
-    """
-    if not candidates:
-        return None
-    rx, ry = ref.centroid
-    return min(
-        candidates,
-        key=lambda d: (d.centroid[0] - rx) ** 2 + (d.centroid[1] - ry) ** 2,
-    )
-
-
 def _bbox_iou(
     a: tuple[float, float, float, float], b: tuple[float, float, float, float]
 ) -> float:
@@ -574,6 +551,41 @@ def _bbox_iou(
     if union <= 0.0:
         return 0.0
     return float(inter / union)
+
+
+def _match_to_pinned(
+    ref: ObjectReference, candidates: list[DetectedObject]
+) -> DetectedObject | None:
+    """Pick the candidate that best matches the pinned bbox.
+
+    Open-vocab detectors return multiple candidates per prompt on cluttered
+    scenes — and the same physical object often shows up at several
+    *scales* (a full bbox around the rack, a tight box around its slats,
+    etc.). Scoring on centroid distance alone can pick a tiny/skinny
+    sub-detection right next to the pin's center over a properly-sized
+    candidate slightly offset.
+
+    Two-tier score: **highest IoU first**, centroid distance as
+    tiebreaker. IoU directly measures "same object, same place, similar
+    scale" so it's the primary signal. When all candidates have IoU=0
+    (the object truly moved out of its pinned region), the centroid
+    tiebreaker falls back to "where did it most likely go".
+
+    Returns ``None`` if no candidates were supplied (caller treats as
+    ``object_missing``).
+    """
+    if not candidates:
+        return None
+    rx, ry = ref.centroid
+
+    def score(d: DetectedObject) -> tuple[float, float]:
+        iou = _bbox_iou(ref.bbox, d.bbox)
+        dist_sq = (d.centroid[0] - rx) ** 2 + (d.centroid[1] - ry) ** 2
+        # min() picks the smallest tuple → max IoU first (via negation),
+        # then min distance.
+        return (-iou, dist_sq)
+
+    return min(candidates, key=score)
 
 
 def run_layer2_objects(
