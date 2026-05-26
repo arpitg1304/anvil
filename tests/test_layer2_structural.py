@@ -202,6 +202,38 @@ def test_run_layer2_clean_when_no_rotation() -> None:
     assert not any(f.issue == "rotation_drift" for f in out.findings)
 
 
+def test_run_layer2_flags_translation_without_rotation() -> None:
+    """Camera that slides without twisting should still trip camera_pose_drift.
+
+    A lateral shift (no rotation) is the realistic 'loose mount slipped'
+    case — and the regression that originally surfaced the gap: rotation
+    stayed near 0 but the rig had visibly moved.
+    """
+    base = _grid_keypoints()
+    pin_det = _RigidStubDetector(base, rotation_deg=0.0)
+    check_det = _RigidStubDetector(base, rotation_deg=0.0, translation=(0.0, 25.0))
+    keypoint_ref = compute_keypoint_reference(_blank_frame(), pin_det)
+    out = run_layer2_keypoints(
+        current_frame=_blank_frame(),
+        keypoint_ref=keypoint_ref,
+        detector=check_det,
+        matcher=_IdentityMatcher(),
+        thresholds=ThresholdSpec(
+            max_camera_pose_drift_deg=1.0,
+            max_camera_translation_px=15.0,
+        ),
+    )
+    assert "camera_pose_drift" in out.flags
+    translation_findings = [
+        f for f in out.findings if f.issue == "translation_drift"
+    ]
+    assert len(translation_findings) == 1
+    # Should NOT have raised a rotation finding (rotation was 0).
+    assert not any(f.issue == "rotation_drift" for f in out.findings)
+    assert translation_findings[0].evidence is not None
+    assert translation_findings[0].evidence["translation_magnitude_px"] > 20.0
+
+
 def test_run_layer2_warns_when_match_count_too_low() -> None:
     base = _grid_keypoints()
     det = _RigidStubDetector(base, rotation_deg=5.0)

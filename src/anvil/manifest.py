@@ -75,6 +75,10 @@ class ThresholdSpec(BaseModel):
     lighting_drift: UnitInterval = 0.3
     max_object_drift_cm: NonNegFloat = 5.0
     max_camera_pose_drift_deg: NonNegFloat = 1.0
+    # Pixel magnitude of the rigid-2D translation recovered by Layer 2.
+    # 15 px ≈ 1.2% of a 1280px frame — catches a camera mount slipping a
+    # noticeable amount without tripping on keypoint detection jitter.
+    max_camera_translation_px: NonNegFloat = 15.0
 
 
 class Manifest(BaseModel):

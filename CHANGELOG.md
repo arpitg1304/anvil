@@ -63,6 +63,11 @@ All notable changes to Anvil are documented here. Format loosely follows
     rotation + translation + inlier counts. Emits its own
     `rotation_drift` finding (layer=2, `source: lightglue-disk`) when
     over threshold.
+  - Also emits a `translation_drift` finding when the recovered
+    translation magnitude exceeds `thresholds.max_camera_translation_px`
+    (default 15 px). Catches the "camera mount slipped vertically"
+    case that pure rotation thresholding misses — both findings raise
+    the existing `camera_pose_drift` flag, no schema change required.
 - `check` runs Layer 2 after Layer 1 when keypoints are pinned and the
   pipeline loads. Layer 2's rotation supersedes Layer 1's ArUco-derived
   pose score in the final report (more accurate, no fiducials needed).
