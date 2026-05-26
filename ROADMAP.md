@@ -28,8 +28,8 @@ Living document. Full context: [anvil_plan.md](anvil_plan.md).
 - [ ] Cascade orchestration
 
 ### Week 3 — LeRobot integration + minimal UI
-- [ ] `guard` wraps arbitrary record commands
-- [ ] Sidecar writer matching LeRobotDataset v3
+- [x] `guard` wraps arbitrary record commands
+- [x] Sidecar writer matching LeRobotDataset v3
 - [ ] FastAPI + HTMX inspector (localhost:7777)
 - [ ] Auto-threshold tuning
 - [ ] README, install, demo notebook

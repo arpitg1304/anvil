@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import platform
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -72,6 +73,12 @@ from anvil.schema import (
     Provenance,
     Scores,
     Status,
+)
+from anvil.sidecar import (
+    anvil_dir,
+    snapshot_episodes,
+    write_session_manifest_hash,
+    write_sidecars,
 )
 
 _console = Console(stderr=True)
@@ -384,129 +391,20 @@ def check_cmd(
 ) -> None:
     """Run a one-shot diff between the live scene and a pinned reference."""
     try:
-        pin_dir = pin_directory(pin_name, root=pin_root)
-        manifest = load_manifest(pin_dir)
-        manifest_hash = compute_manifest_hash(pin_dir)
-        lighting_ref = load_lighting_reference(pin_dir)
-        aruco_ref = load_aruco_reference(pin_dir)
-        embedding_ref = load_embedding_reference(pin_dir)
-        embedder = load_embedder() if embedding_ref is not None else None
-        keypoint_ref = load_keypoint_reference(pin_dir)
-        keypoint_pipeline = (
-            load_keypoint_pipeline() if keypoint_ref is not None else None
-        )
-        object_refs = load_object_references(pin_dir)
-        object_detector = load_object_detector() if object_refs else None
-
-        driver = camera_driver or manifest.camera.driver
-        device = camera_device or manifest.camera.device
-        with open_camera(driver, device) as cam:
-            frame = cam.grab()
-
-        layer1 = run_layer1(
-            current_frame=frame,
-            lighting_ref=lighting_ref,
-            aruco_ref=aruco_ref,
-            thresholds=manifest.thresholds,
-            embedding_ref=embedding_ref,
-            embedder=embedder,
-        )
-
-        layer2: Layer2KeypointsOutput | None = None
-        if keypoint_ref is not None and keypoint_pipeline is not None:
-            kp_detector, kp_matcher = keypoint_pipeline
-            layer2 = run_layer2_keypoints(
-                current_frame=frame,
-                keypoint_ref=keypoint_ref,
-                detector=kp_detector,
-                matcher=kp_matcher,
-                thresholds=manifest.thresholds,
-            )
-
-        layer2_objects: Layer2ObjectsOutput | None = None
-        if object_refs and object_detector is not None:
-            layer2_objects = run_layer2_objects(
-                current_frame=frame,
-                object_refs=object_refs,
-                detector=object_detector,
-                embedder=embedder,
-                thresholds=manifest.thresholds,
-            )
-
-        # Merge findings + flags from all layers; Layer 2 keypoints wins
-        # the pose score when it ran successfully (more accurate than ArUco).
-        merged_findings = list(layer1.findings)
-        merged_flags = list(layer1.flags)
-        pose_drift_score = layer1.max_camera_pose_drift_deg
-        if layer2 is not None:
-            merged_findings.extend(layer2.findings)
-            for flag in layer2.flags:
-                if flag not in merged_flags:
-                    merged_flags.append(flag)
-            if layer2.num_matches >= 10:
-                pose_drift_score = layer2.abs_rotation_deg
-        if layer2_objects is not None:
-            merged_findings.extend(layer2_objects.findings)
-            for flag in layer2_objects.flags:
-                if flag not in merged_flags:
-                    merged_flags.append(flag)
-
-        status = _status_from_findings(merged_findings)
-        report = EpisodeReport(
-            anvil_schema_version=ANVIL_SCHEMA_VERSION,
+        result = _run_check(
+            pin_name,
+            camera_device=camera_device,
+            camera_driver=camera_driver,
+            pin_root=pin_root,
             episode_id=episode_id,
-            checked_at=_utcnow(),
-            pin=PinReference(
-                name=manifest.name,
-                manifest_hash=manifest_hash,
-                pinned_at=manifest.pinned_at,
-            ),
-            status=status,
-            operator_action="proceeded",
-            scores=Scores(
-                scene_drift=layer1.scene_drift,
-                lighting_drift=layer1.lighting_drift,
-                max_object_drift_cm=0.0,
-                max_camera_pose_drift_deg=pose_drift_score,
-                max_robot_joint_drift_deg=0.0,
-            ),
-            flags=merged_flags,
-            findings=merged_findings,
-            provenance=_provenance(),
         )
-
-        diff_path: Path | None = None
-        if report.status != "passed":
-            current_object_detections: list[DetectedObject] = []
-            if object_refs and object_detector is not None:
-                current_object_detections = object_detector.detect(
-                    frame, list({ref.prompt for ref in object_refs})
-                )
-            diff_path = render_check_diff(
-                current_frame=frame,
-                layer1=layer1,
-                aruco_ref=aruco_ref,
-                pin_dir=pin_dir,
-                pin_name=manifest.name,
-                threshold_deg=manifest.thresholds.max_camera_pose_drift_deg,
-                object_refs=object_refs,
-                current_detections=current_object_detections,
-            )
-
         if json_only:
-            click.echo(report.model_dump_json())
+            click.echo(result.report.model_dump_json())
         else:
-            _render_check_summary(report, layer1.scene_drift_source)
-            if diff_path is not None:
-                _console.print(f"  diff:          {diff_path}")
-
-        sys.exit(
-            {
-                "passed": _EXIT_PASSED,
-                "warning": _EXIT_WARNING,
-                "failed": _EXIT_FAILED,
-            }[report.status]
-        )
+            _render_check_summary(result.report, result.scene_drift_source)
+            if result.diff_path is not None:
+                _console.print(f"  diff:          {result.diff_path}")
+        sys.exit(_EXIT_FOR_STATUS[result.report.status])
     except PinNotFound as exc:
         _console.print(f"[bold red]✗[/] {exc}")
         sys.exit(_EXIT_ERROR)
@@ -515,14 +413,323 @@ def check_cmd(
         sys.exit(_EXIT_ERROR)
 
 
-@cli.command("guard")
-@click.option("--against", "pin_name", required=True)
-@click.option("--record-cmd", required=True, help="Recording command to wrap.")
-def guard_cmd(pin_name: str, record_cmd: str) -> None:
-    """Wrap a recording command with a pre-episode check (Week 3)."""
-    raise click.ClickException(
-        "guard is not yet implemented — landing in Week 3 alongside LeRobot sidecar writing."
+@dataclass
+class _CheckResult:
+    """Bundle of state from one ``_run_check`` invocation.
+
+    ``check_cmd`` only needs the report; ``guard_cmd`` reuses the same
+    object to drive its proceed-or-block decision and to write per-episode
+    sidecars without rerunning the pipeline.
+    """
+
+    report: EpisodeReport
+    diff_path: Path | None
+    scene_drift_source: str
+    pin_dir: Path
+    manifest: Manifest
+
+
+_EXIT_FOR_STATUS: dict[Status, int] = {
+    "passed": _EXIT_PASSED,
+    "warning": _EXIT_WARNING,
+    "failed": _EXIT_FAILED,
+}
+
+
+def _run_check(
+    pin_name: str,
+    *,
+    camera_device: str | None = None,
+    camera_driver: str | None = None,
+    pin_root: Path | None = None,
+    episode_id: str = "manual_check",
+) -> _CheckResult:
+    """Run the full check pipeline and return everything callers might need.
+
+    Writes an annotated diff PNG into ``<pin_dir>/diffs/`` when the report
+    status is not ``passed`` — same behavior the CLI's ``check`` had
+    inline before this was factored out.
+    """
+    pin_dir = pin_directory(pin_name, root=pin_root)
+    manifest = load_manifest(pin_dir)
+    manifest_hash = compute_manifest_hash(pin_dir)
+    lighting_ref = load_lighting_reference(pin_dir)
+    aruco_ref = load_aruco_reference(pin_dir)
+    embedding_ref = load_embedding_reference(pin_dir)
+    embedder = load_embedder() if embedding_ref is not None else None
+    keypoint_ref = load_keypoint_reference(pin_dir)
+    keypoint_pipeline = (
+        load_keypoint_pipeline() if keypoint_ref is not None else None
     )
+    object_refs = load_object_references(pin_dir)
+    object_detector = load_object_detector() if object_refs else None
+
+    driver = camera_driver or manifest.camera.driver
+    device = camera_device or manifest.camera.device
+    with open_camera(driver, device) as cam:
+        frame = cam.grab()
+
+    layer1 = run_layer1(
+        current_frame=frame,
+        lighting_ref=lighting_ref,
+        aruco_ref=aruco_ref,
+        thresholds=manifest.thresholds,
+        embedding_ref=embedding_ref,
+        embedder=embedder,
+    )
+
+    layer2: Layer2KeypointsOutput | None = None
+    if keypoint_ref is not None and keypoint_pipeline is not None:
+        kp_detector, kp_matcher = keypoint_pipeline
+        layer2 = run_layer2_keypoints(
+            current_frame=frame,
+            keypoint_ref=keypoint_ref,
+            detector=kp_detector,
+            matcher=kp_matcher,
+            thresholds=manifest.thresholds,
+        )
+
+    layer2_objects: Layer2ObjectsOutput | None = None
+    if object_refs and object_detector is not None:
+        layer2_objects = run_layer2_objects(
+            current_frame=frame,
+            object_refs=object_refs,
+            detector=object_detector,
+            embedder=embedder,
+            thresholds=manifest.thresholds,
+        )
+
+    merged_findings = list(layer1.findings)
+    merged_flags = list(layer1.flags)
+    pose_drift_score = layer1.max_camera_pose_drift_deg
+    if layer2 is not None:
+        merged_findings.extend(layer2.findings)
+        for flag in layer2.flags:
+            if flag not in merged_flags:
+                merged_flags.append(flag)
+        if layer2.num_matches >= 10:
+            pose_drift_score = layer2.abs_rotation_deg
+    if layer2_objects is not None:
+        merged_findings.extend(layer2_objects.findings)
+        for flag in layer2_objects.flags:
+            if flag not in merged_flags:
+                merged_flags.append(flag)
+
+    status = _status_from_findings(merged_findings)
+    report = EpisodeReport(
+        anvil_schema_version=ANVIL_SCHEMA_VERSION,
+        episode_id=episode_id,
+        checked_at=_utcnow(),
+        pin=PinReference(
+            name=manifest.name,
+            manifest_hash=manifest_hash,
+            pinned_at=manifest.pinned_at,
+        ),
+        status=status,
+        operator_action="proceeded",
+        scores=Scores(
+            scene_drift=layer1.scene_drift,
+            lighting_drift=layer1.lighting_drift,
+            max_object_drift_cm=0.0,
+            max_camera_pose_drift_deg=pose_drift_score,
+            max_robot_joint_drift_deg=0.0,
+        ),
+        flags=merged_flags,
+        findings=merged_findings,
+        provenance=_provenance(),
+    )
+
+    diff_path: Path | None = None
+    if report.status != "passed":
+        current_object_detections: list[DetectedObject] = []
+        if object_refs and object_detector is not None:
+            current_object_detections = object_detector.detect(
+                frame, list({ref.prompt for ref in object_refs})
+            )
+        diff_path = render_check_diff(
+            current_frame=frame,
+            layer1=layer1,
+            aruco_ref=aruco_ref,
+            pin_dir=pin_dir,
+            pin_name=manifest.name,
+            threshold_deg=manifest.thresholds.max_camera_pose_drift_deg,
+            object_refs=object_refs,
+            current_detections=current_object_detections,
+        )
+
+    return _CheckResult(
+        report=report,
+        diff_path=diff_path,
+        scene_drift_source=layer1.scene_drift_source,
+        pin_dir=pin_dir,
+        manifest=manifest,
+    )
+
+
+@cli.command("guard")
+@click.option(
+    "--against",
+    "pin_name",
+    required=True,
+    help="Name of the pin to check against.",
+)
+@click.option(
+    "--record-cmd",
+    required=True,
+    help="Recording command to wrap (e.g. 'lerobot record --task ...').",
+)
+@click.option(
+    "--dataset-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "LeRobot-style dataset directory to watch for new episodes. "
+        "When set, anvil writes an EpisodeReport JSON under <dir>/anvil/ "
+        "for each episode the record command creates."
+    ),
+)
+@click.option(
+    "--on-warning",
+    type=click.Choice(["prompt", "tag", "block"]),
+    default="prompt",
+    show_default=True,
+    help=(
+        "What to do if the pre-flight check returns WARNING. "
+        "'prompt' asks the operator interactively; 'tag' proceeds and "
+        "stamps the deviation onto each episode's sidecar; 'block' aborts "
+        "the record."
+    ),
+)
+@click.option(
+    "--on-failed",
+    type=click.Choice(["block", "prompt", "proceed"]),
+    default="block",
+    show_default=True,
+    help="What to do if the pre-flight check returns FAILED. Defaults to block.",
+)
+@click.option(
+    "--camera",
+    "camera_device",
+    default=None,
+    help="Override camera device for the pre-flight check (uses pin's camera if omitted).",
+)
+@click.option(
+    "--camera-driver",
+    type=click.Choice(["webcam", "file"]),
+    default=None,
+    help="Override camera driver for the pre-flight check.",
+)
+@click.option(
+    "--root",
+    "pin_root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override pin storage root.",
+)
+def guard_cmd(
+    pin_name: str,
+    record_cmd: str,
+    dataset_dir: Path | None,
+    on_warning: str,
+    on_failed: str,
+    camera_device: str | None,
+    camera_driver: str | None,
+    pin_root: Path | None,
+) -> None:
+    """Wrap a recording command with a pre-episode check.
+
+    Workflow per invocation:
+
+    1. Run ``check`` against ``--against`` as a pre-flight.
+    2. Decide proceed/block from the report status and the ``--on-warning``
+       / ``--on-failed`` policies.
+    3. If proceeding, snapshot the dataset directory (if any), run the
+       record command as a subprocess, then write per-episode sidecars
+       for whatever new ``episode_NNNNNN/`` directories appeared.
+
+    Exit code is the record command's own exit code on success, or the
+    standard anvil exit code (0/1/2/3) when guard blocks before running.
+    """
+    import shlex
+    import subprocess
+
+    try:
+        result = _run_check(
+            pin_name,
+            camera_device=camera_device,
+            camera_driver=camera_driver,
+            pin_root=pin_root,
+            episode_id="guard_preflight",
+        )
+        _render_check_summary(result.report, result.scene_drift_source)
+        if result.diff_path is not None:
+            _console.print(f"  diff:          {result.diff_path}")
+
+        proceed = _decide_proceed(result.report.status, on_warning, on_failed)
+        if not proceed:
+            _console.print(
+                "[bold red]✗[/] Aborting recording — re-pin or re-stage the rig "
+                "and try again."
+            )
+            sys.exit(_EXIT_FOR_STATUS[result.report.status])
+
+        before = (
+            snapshot_episodes(dataset_dir) if dataset_dir is not None else set()
+        )
+        _console.print(f"[bold blue]►[/] Running: {record_cmd}")
+        try:
+            completed = subprocess.run(shlex.split(record_cmd), check=False)
+        except FileNotFoundError as exc:
+            _console.print(f"[bold red]✗[/] Record command not found: {exc}")
+            sys.exit(_EXIT_ERROR)
+
+        if dataset_dir is not None:
+            new_eps = sorted(snapshot_episodes(dataset_dir) - before)
+            if new_eps:
+                written = write_sidecars(dataset_dir, new_eps, result.report)
+                write_session_manifest_hash(
+                    dataset_dir, result.report.pin.manifest_hash
+                )
+                _console.print(
+                    f"  sidecars:     {len(written)} written under "
+                    f"{anvil_dir(dataset_dir)}"
+                )
+            else:
+                _console.print(
+                    "  sidecars:     no new episode_NNNNNN/ directories detected"
+                )
+
+        sys.exit(completed.returncode)
+    except PinNotFound as exc:
+        _console.print(f"[bold red]✗[/] {exc}")
+        sys.exit(_EXIT_ERROR)
+    except AnvilError as exc:
+        _console.print(f"[bold red]✗[/] {exc}")
+        sys.exit(_EXIT_ERROR)
+
+
+def _decide_proceed(
+    status: Status, on_warning: str, on_failed: str
+) -> bool:
+    """Decide whether to proceed with the record command given the check status."""
+    if status == "passed":
+        return True
+    if status == "warning":
+        if on_warning == "tag":
+            return True
+        if on_warning == "block":
+            return False
+        return click.confirm(
+            "WARNING: drift detected. Proceed with recording?", default=False
+        )
+    # status == "failed"
+    if on_failed == "proceed":
+        return True
+    if on_failed == "prompt":
+        return click.confirm(
+            "FAILED: critical drift detected. Proceed anyway?", default=False
+        )
+    return False
 
 
 def main() -> None:
