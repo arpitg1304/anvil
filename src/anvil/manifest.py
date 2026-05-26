@@ -29,6 +29,10 @@ from anvil.schema import NonNegFloat, SchemaVersion, UnitInterval
 MANIFEST_FILENAME = "manifest.yaml"
 REFERENCE_IMAGE_FILENAME = "reference.png"
 DEFAULT_PIN_ROOT = Path(".anvil")
+# Subdirectory of a pin where `check` writes annotated diff images for
+# warning/failed runs. Excluded from manifest_hash so a check that writes a
+# diff doesn't retroactively invalidate the pin.
+DIFFS_SUBDIR = "diffs"
 
 CameraDriver = Literal["webcam", "file"]
 RobotDriver = Literal["lerobot", "none"]
@@ -147,8 +151,10 @@ def compute_manifest_hash(pin_dir: Path) -> str:
     for path in sorted(pin_dir.rglob("*")):
         if not path.is_file():
             continue
-        rel = path.relative_to(pin_dir).as_posix()
-        h.update(rel.encode("utf-8"))
+        rel = path.relative_to(pin_dir)
+        if rel.parts and rel.parts[0] == DIFFS_SUBDIR:
+            continue
+        h.update(rel.as_posix().encode("utf-8"))
         h.update(b"\x00")
         h.update(path.read_bytes())
         h.update(b"\x00")
@@ -157,6 +163,7 @@ def compute_manifest_hash(pin_dir: Path) -> str:
 
 __all__ = [
     "DEFAULT_PIN_ROOT",
+    "DIFFS_SUBDIR",
     "MANIFEST_FILENAME",
     "REFERENCE_IMAGE_FILENAME",
     "CameraDriver",
