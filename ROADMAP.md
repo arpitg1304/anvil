@@ -30,7 +30,8 @@ Living document. Full context: [anvil_plan.md](anvil_plan.md).
 ### Week 3 — LeRobot integration + minimal UI
 - [x] `guard` wraps arbitrary record commands
 - [x] Sidecar writer matching LeRobotDataset v3
-- [ ] FastAPI + HTMX inspector (localhost:7777)
+- [x] FastAPI inspector (`anvil-inspect`, localhost:7777). HTMX deferred —
+      first pass is plain server-rendered HTML + Tailwind CDN
 - [ ] Auto-threshold tuning
 - [ ] README, install, demo notebook
 - [ ] Public repo + initial release

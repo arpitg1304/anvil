@@ -23,11 +23,14 @@ classifiers = [
 ]
 dependencies = [
     "click>=8.4.0",
+    "fastapi>=0.115",
+    "jinja2>=3.1",
     "numpy>=2.4.6",
     "opencv-python>=4.13.0.92",
     "pydantic>=2.6",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +50,7 @@ full = [
 
 [project.scripts]
 anvil = "anvil.cli:main"
+anvil-inspect = "anvil.server.main:main"
 
 [project.urls]
 Homepage = "https://github.com/arpitg1304/anvil"

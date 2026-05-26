@@ -130,3 +130,25 @@ All notable changes to Anvil are documented here. Format loosely follows
   `guard_cmd` — same pipeline, same diff rendering, no code duplication.
 - 132 tests across all layers, models, persistence, CLI, sidecar, and
   diff renderer. `mypy --strict` and `ruff` clean across 26 source files.
+- `anvil-inspect` — read-only localhost web UI for browsing pins.
+  FastAPI + Jinja2 + Tailwind via CDN, no build step. Launched as a
+  separate console script (the three CLI verbs stay locked at
+  pin/check/guard).
+  - Home (`/`): grid of all pins under `.anvil/` with reference
+    thumbnails, pinned-at dates, and tag badges (aruco, embedder,
+    keypoints, objects, diff count).
+  - Pin detail (`/pin/<name>`): full reference image, manifest summary,
+    named-object list with bboxes, raw `manifest.yaml` in a collapsible
+    panel, and a diff-history gallery sorted newest-first.
+  - Static-file routes for `reference.png` and individual diff PNGs,
+    both with path-traversal protection.
+- `anvil.server` package — FastAPI app factory in `app.py`, console
+  script entry point in `main.py`, three Jinja2 templates. The
+  inspector reads from disk on every request; no caching, no DB, no
+  shared state.
+- Main install now pulls `fastapi`, `uvicorn`, `jinja2` (~10MB
+  combined) for the inspector. Layer-1-only users still don't need
+  the `[full]` extra.
+- 143 tests across all layers, models, persistence, CLI, sidecar,
+  diff renderer, and server. `mypy --strict` and `ruff` clean across
+  28 source files.
