@@ -94,6 +94,8 @@ class Manifest(BaseModel):
     aruco_present: bool = False
     embedding_present: bool = False
     embedder_name: str | None = None
+    keypoints_present: bool = False
+    keypoint_detector_name: str | None = None
 
 
 # --- filesystem helpers ---------------------------------------------------

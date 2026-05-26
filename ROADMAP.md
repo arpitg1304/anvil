@@ -12,7 +12,8 @@ Living document. Full context: [anvil_plan.md](anvil_plan.md).
 - [x] JSON output, exit-code semantics (0 / 1 / 2 / 3)
 - [x] Layer 1: histogram + ArUco + composite drift scores
 - [x] Layer 1: DINOv3 global cosine (gated behind `[full]` extra)
-- [ ] Layer 2 keypoints: SuperPoint + LightGlue
+- [x] Layer 2 keypoints: DISK + LightGlue (kornia dropped SuperPoint; DISK
+      is the in-package equivalent)
 - [ ] Layer 0: LeRobot driver home-pose check (opt-in)
 
 ### Week 2 — structural + VLM judge

@@ -17,10 +17,11 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _disable_embedder_in_cli(
+def _disable_heavy_models_in_cli(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     if "test_cli" not in request.node.nodeid:
         return
     monkeypatch.setattr("anvil.cli.load_embedder", lambda *a, **kw: None)
+    monkeypatch.setattr("anvil.cli.load_keypoint_pipeline", lambda *a, **kw: None)
