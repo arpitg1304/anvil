@@ -215,6 +215,46 @@ def test_run_layer1_flags_camera_pose_drift_after_rotation() -> None:
     assert out.max_camera_pose_drift_deg > 5.0
 
 
+def test_aruco_pose_drift_uses_median_not_max() -> None:
+    """A single jittery marker shouldn't dominate the drift score.
+
+    With 4 markers — three at 0.05° and one at 2.0° — max would report 2.0°
+    and trip a tight threshold. Median should report ~0.05° because three of
+    the four markers agree.
+    """
+    from anvil.layers.layer1_fast import _aruco_pose_drift
+
+    reference = [
+        ArucoMarker(id=i, center_px=(0.0, 0.0), orientation_deg=0.0) for i in range(4)
+    ]
+    # Three markers stable around 0.05°, one wild outlier at 2°.
+    current = [
+        ArucoMarker(id=0, center_px=(0.0, 0.0), orientation_deg=0.05),
+        ArucoMarker(id=1, center_px=(0.0, 0.0), orientation_deg=-0.04),
+        ArucoMarker(id=2, center_px=(0.0, 0.0), orientation_deg=0.06),
+        ArucoMarker(id=3, center_px=(0.0, 0.0), orientation_deg=2.0),
+    ]
+    score, missing, per_marker = _aruco_pose_drift(reference, current)
+    assert missing == []
+    assert score < 0.5  # median of the abs deltas, not the max
+    assert 1.5 < max(abs(v) for v in per_marker.values()) < 2.5
+    assert set(per_marker.keys()) == {0, 1, 2, 3}
+
+
+def test_aruco_pose_drift_real_rotation_still_flagged() -> None:
+    """All markers moving consistently → median reports the real rotation."""
+    from anvil.layers.layer1_fast import _aruco_pose_drift
+
+    reference = [
+        ArucoMarker(id=i, center_px=(0.0, 0.0), orientation_deg=0.0) for i in range(4)
+    ]
+    current = [
+        ArucoMarker(id=i, center_px=(0.0, 0.0), orientation_deg=5.0) for i in range(4)
+    ]
+    score, _missing, _per_marker = _aruco_pose_drift(reference, current)
+    assert score == pytest.approx(5.0, abs=0.001)
+
+
 def test_run_layer1_flags_missing_markers() -> None:
     pinned = _marker_frame(marker_id=0)
     current = _solid_frame((255, 255, 255), shape=(480, 640))  # marker removed
