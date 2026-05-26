@@ -25,3 +25,4 @@ def _disable_heavy_models_in_cli(
         return
     monkeypatch.setattr("anvil.cli.load_embedder", lambda *a, **kw: None)
     monkeypatch.setattr("anvil.cli.load_keypoint_pipeline", lambda *a, **kw: None)
+    monkeypatch.setattr("anvil.cli.load_object_detector", lambda *a, **kw: None)
