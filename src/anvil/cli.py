@@ -63,7 +63,7 @@ from anvil.manifest import (
 )
 from anvil.models import load_embedder
 from anvil.models.keypoints import load_keypoint_pipeline
-from anvil.models.objects import load_object_detector
+from anvil.models.objects import DetectedObject, load_object_detector
 from anvil.schema import (
     ANVIL_SCHEMA_VERSION,
     EpisodeReport,
@@ -477,6 +477,11 @@ def check_cmd(
 
         diff_path: Path | None = None
         if report.status != "passed":
+            current_object_detections: list[DetectedObject] = []
+            if object_refs and object_detector is not None:
+                current_object_detections = object_detector.detect(
+                    frame, list({ref.prompt for ref in object_refs})
+                )
             diff_path = render_check_diff(
                 current_frame=frame,
                 layer1=layer1,
@@ -484,6 +489,8 @@ def check_cmd(
                 pin_dir=pin_dir,
                 pin_name=manifest.name,
                 threshold_deg=manifest.thresholds.max_camera_pose_drift_deg,
+                object_refs=object_refs,
+                current_detections=current_object_detections,
             )
 
         if json_only:
