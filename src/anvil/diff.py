@@ -24,7 +24,9 @@ import numpy as np
 
 from anvil.cameras.base import Frame
 from anvil.layers.layer1_fast import ArucoReference, Layer1Output
+from anvil.layers.layer2_structural import ObjectReference
 from anvil.manifest import DIFFS_SUBDIR, REFERENCE_IMAGE_FILENAME
+from anvil.models.objects import DetectedObject
 
 _HEADER_HEIGHT = 80
 _HEADER_BG = (24, 24, 24)
@@ -37,6 +39,12 @@ _CUR_PANEL_TAG = "CURRENT"
 _MARKER_OK_COLOR = (60, 220, 60)       # green
 _MARKER_DRIFT_COLOR = (60, 60, 255)    # red — current marker exceeded threshold
 _REF_OUTLINE_COLOR = (200, 200, 50)    # cyan-yellow, used on reference panel
+
+# Per-object outline colors.
+_OBJECT_REF_COLOR = (255, 200, 0)      # cyan-blue on reference panel
+_OBJECT_OK_COLOR = (60, 220, 60)       # green when matched + within threshold
+_OBJECT_DRIFT_COLOR = (60, 60, 255)    # red when matched but over threshold
+_OBJECT_MISSING_COLOR = (128, 128, 128)  # grey when no current match
 
 
 def diff_dir(pin_dir: Path) -> Path:
@@ -51,6 +59,8 @@ def render_check_diff(
     pin_dir: Path,
     pin_name: str,
     threshold_deg: float,
+    object_refs: list[ObjectReference] | None = None,
+    current_detections: list[DetectedObject] | None = None,
     timestamp: datetime | None = None,
 ) -> Path:
     """Write an annotated side-by-side PNG into ``<pin_dir>/diffs/``.
@@ -82,6 +92,11 @@ def render_check_diff(
         threshold_deg=threshold_deg,
         outline_color=_MARKER_OK_COLOR,
     )
+    if object_refs:
+        ref_panel = _annotate_object_refs(ref_panel, object_refs)
+        cur_panel = _annotate_object_currents(
+            cur_panel, object_refs, current_detections or []
+        )
     ref_panel = _stamp_panel_tag(ref_panel, _REF_PANEL_TAG)
     cur_panel = _stamp_panel_tag(cur_panel, _CUR_PANEL_TAG)
 
@@ -175,6 +190,91 @@ def _annotate_pose(
             label += f"  Δ{delta:+.2f}°"
         _draw_label(panel, label, (int(cx) - 80, int(cy) - 12))
     return panel
+
+
+def _annotate_object_refs(panel: Frame, refs: list[ObjectReference]) -> Frame:
+    """Draw each pinned object's bbox + name on the reference panel."""
+    for ref in refs:
+        x1, y1, x2, y2 = (round(v) for v in ref.bbox)
+        cv2.rectangle(panel, (x1, y1), (x2, y2), _OBJECT_REF_COLOR, 2)
+        size_w, size_h = x2 - x1, y2 - y1
+        _draw_label(
+            panel,
+            f"{ref.name} ({size_w}x{size_h})",
+            (x1 + 4, max(y1 - 8, 16)),
+        )
+    return panel
+
+
+def _annotate_object_currents(
+    panel: Frame,
+    refs: list[ObjectReference],
+    detections: list[DetectedObject],
+) -> Frame:
+    """Draw current-frame candidates for each pinned object.
+
+    For each pinned ref we draw *all* candidates matching its prompt — the
+    matcher's chosen one in green/red (depending on whether it would trip
+    a finding), and any other candidates in a thin grey outline so the
+    operator can see what alternatives the detector returned. This makes
+    "the matcher picked a small candidate near the centroid over a
+    properly-sized one offset" visible at a glance.
+    """
+    # Group detections by prompt for fast lookup.
+    candidates_by_prompt: dict[str, list[DetectedObject]] = {}
+    for d in detections:
+        candidates_by_prompt.setdefault(d.name, []).append(d)
+
+    for ref in refs:
+        candidates = candidates_by_prompt.get(ref.prompt, [])
+        # Other candidates first (so the chosen one draws on top).
+        chosen = _pick_best_match(ref, candidates)
+        for cand in candidates:
+            if cand is chosen:
+                continue
+            x1, y1, x2, y2 = (round(v) for v in cand.bbox)
+            cv2.rectangle(panel, (x1, y1), (x2, y2), _OBJECT_MISSING_COLOR, 1)
+        if chosen is None:
+            continue
+        iou = _bbox_iou(ref.bbox, chosen.bbox)
+        color = _OBJECT_OK_COLOR if iou >= 0.5 else _OBJECT_DRIFT_COLOR
+        x1, y1, x2, y2 = (round(v) for v in chosen.bbox)
+        cv2.rectangle(panel, (x1, y1), (x2, y2), color, 2)
+        size_w, size_h = x2 - x1, y2 - y1
+        _draw_label(
+            panel,
+            f"{ref.name} IoU={iou:.2f} ({size_w}x{size_h})",
+            (x1 + 4, max(y1 - 8, 16)),
+        )
+    return panel
+
+
+def _pick_best_match(
+    ref: ObjectReference, candidates: list[DetectedObject]
+) -> DetectedObject | None:
+    """Mirror of ``layer2_structural._match_to_pinned`` so the diff shows the
+    same candidate the orchestrator picked. Kept as a direct import to
+    avoid drift.
+    """
+    from anvil.layers.layer2_structural import _match_to_pinned
+
+    return _match_to_pinned(ref, candidates)
+
+
+def _bbox_iou(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    inter_x1, inter_y1 = max(ax1, bx1), max(ay1, by1)
+    inter_x2, inter_y2 = min(ax2, bx2), min(ay2, by2)
+    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+        return 0.0
+    inter = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+    area_a = max(0.0, (ax2 - ax1) * (ay2 - ay1))
+    area_b = max(0.0, (bx2 - bx1) * (by2 - by1))
+    union = area_a + area_b - inter
+    return float(inter / union) if union > 0 else 0.0
 
 
 def _stamp_panel_tag(panel: Frame, tag: str) -> Frame:

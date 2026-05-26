@@ -250,3 +250,379 @@ def test_run_layer2_warns_when_match_count_too_low() -> None:
     # Should not have attempted a rotation finding under sparse-match regime.
     assert not any(f.issue == "rotation_drift" for f in out.findings)
     assert out.num_matches < 10
+
+
+# --- named-object orchestrator -----------------------------------------
+
+
+from anvil.layers.layer2_structural import (  # noqa: E402
+    ObjectReference,
+    compute_object_reference,
+    load_object_references,
+    object_reference_path,
+    run_layer2_objects,
+    save_object_reference,
+)
+from anvil.models.objects import DetectedObject, ObjectDetector  # noqa: E402
+
+
+class _StaticObjectDetector(ObjectDetector):
+    """Detector that returns a caller-supplied mapping ``prompt -> bbox``."""
+
+    name: ClassVar[str] = "static-stub"
+
+    def __init__(
+        self, results: dict[str, tuple[float, float, float, float]] | None = None
+    ) -> None:
+        self._results = results or {}
+
+    def load(self) -> None:
+        return None
+
+    def detect(
+        self,
+        frame: Frame,
+        prompts: list[str],
+        *,
+        confidence_threshold: float = 0.1,
+    ) -> list[DetectedObject]:
+        out: list[DetectedObject] = []
+        for p in prompts:
+            bbox = self._results.get(p)
+            if bbox is None:
+                continue
+            out.append(DetectedObject(name=p, bbox=bbox, confidence=0.95))
+        return out
+
+
+def test_object_reference_round_trip(tmp_path: Path) -> None:
+    ref = ObjectReference(
+        name="red_cube",
+        prompt="red cube",
+        bbox=(100.0, 200.0, 300.0, 400.0),
+        confidence=0.9,
+        image_hw=(480, 640),
+        detector_name="static-stub",
+        region_embedding=[0.5, 0.5, 0.5, 0.5],
+        embedder_name="stub-embedder",
+    )
+    saved = save_object_reference(ref, tmp_path)
+    assert saved == object_reference_path(tmp_path, "red_cube")
+    reloaded = load_object_references(tmp_path)
+    assert len(reloaded) == 1
+    assert reloaded[0] == ref
+
+
+def test_compute_object_reference_returns_none_when_not_detected() -> None:
+    det = _StaticObjectDetector(results={})
+    ref = compute_object_reference(
+        _blank_frame(), name="rack", prompt="test tube rack", detector=det
+    )
+    assert ref is None
+
+
+def test_compute_object_references_batches_single_detector_call() -> None:
+    """The batch API must invoke ``detector.detect`` exactly once."""
+
+    class _CountingDetector(_StaticObjectDetector):
+        def __init__(self) -> None:
+            super().__init__(
+                results={
+                    "red cube": (10.0, 20.0, 110.0, 120.0),
+                    "blue plate": (300.0, 50.0, 500.0, 250.0),
+                }
+            )
+            self.detect_calls = 0
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            self.detect_calls += 1
+            return super().detect(frame, prompts)
+
+    from anvil.layers.layer2_structural import compute_object_references
+
+    det = _CountingDetector()
+    pairs = [("cube", "red cube"), ("plate", "blue plate")]
+    results = compute_object_references(_blank_frame(), pairs, det)
+    assert det.detect_calls == 1
+    names_to_refs = dict(results)
+    assert names_to_refs["cube"] is not None
+    assert names_to_refs["plate"] is not None
+    assert names_to_refs["cube"].bbox == (10.0, 20.0, 110.0, 120.0)
+
+
+def test_compute_object_references_dedupes_same_prompt() -> None:
+    """Two object names sharing one prompt should bind to the same bbox."""
+
+    class _Det(_StaticObjectDetector):
+        def __init__(self) -> None:
+            super().__init__(results={"robot gripper": (10.0, 10.0, 110.0, 110.0)})
+            self.seen_prompts: list[list[str]] | None = None
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            # Capture what prompts the batch API passed in.
+            self.seen_prompts = list(prompts)
+            return super().detect(frame, prompts)
+
+    from anvil.layers.layer2_structural import compute_object_references
+
+    det = _Det()
+    results = compute_object_references(
+        _blank_frame(),
+        [("left", "robot gripper"), ("right", "robot gripper")],
+        det,
+    )
+    # Detector should only see the unique prompt once, not duplicated.
+    assert det.seen_prompts == ["robot gripper"]
+    by_name = dict(results)
+    assert by_name["left"] is not None
+    assert by_name["right"] is not None
+    assert by_name["left"].bbox == by_name["right"].bbox
+
+
+def test_compute_object_reference_captures_bbox() -> None:
+    det = _StaticObjectDetector(
+        results={"red cube": (10.0, 20.0, 110.0, 120.0)}
+    )
+    ref = compute_object_reference(
+        _blank_frame(), name="red_cube", prompt="red cube", detector=det
+    )
+    assert ref is not None
+    assert ref.bbox == (10.0, 20.0, 110.0, 120.0)
+    assert ref.detector_name == "static-stub"
+    assert ref.region_embedding == []  # no embedder passed
+
+
+def test_run_layer2_objects_clean_when_object_in_same_place(tmp_path: Path) -> None:
+    bbox = (100.0, 100.0, 300.0, 300.0)
+    det = _StaticObjectDetector(results={"red cube": bbox})
+    ref = compute_object_reference(
+        _blank_frame(), name="red_cube", prompt="red cube", detector=det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=det,
+        embedder=None,
+        thresholds=ThresholdSpec(),
+    )
+    assert out.findings == []
+    assert out.flags == []
+    assert out.min_object_iou == pytest.approx(1.0)
+
+
+def test_run_layer2_objects_flags_object_missing(tmp_path: Path) -> None:
+    pin_det = _StaticObjectDetector(
+        results={"red cube": (100.0, 100.0, 300.0, 300.0)}
+    )
+    check_det = _StaticObjectDetector(results={})  # nothing detected
+    ref = compute_object_reference(
+        _blank_frame(), name="red_cube", prompt="red cube", detector=pin_det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=check_det,
+        embedder=None,
+        thresholds=ThresholdSpec(),
+    )
+    assert "object_missing" in out.flags
+    missing = [f for f in out.findings if f.issue == "object_missing"]
+    assert len(missing) == 1
+    assert missing[0].subject == "red_cube"
+
+
+def test_run_layer2_objects_flags_position_drift(tmp_path: Path) -> None:
+    pin_det = _StaticObjectDetector(
+        results={"red cube": (100.0, 100.0, 300.0, 300.0)}
+    )
+    # Shift bbox so IoU drops below 0.5.
+    check_det = _StaticObjectDetector(
+        results={"red cube": (300.0, 100.0, 500.0, 300.0)}
+    )
+    ref = compute_object_reference(
+        _blank_frame(), name="red_cube", prompt="red cube", detector=pin_det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=check_det,
+        embedder=None,
+        thresholds=ThresholdSpec(min_object_iou=0.5),
+    )
+    assert "object_moved" in out.flags
+    pos = [f for f in out.findings if f.issue == "position_drift"]
+    assert len(pos) == 1
+    assert pos[0].evidence is not None
+    assert pos[0].evidence["iou"] < 0.5
+    assert out.max_object_drift_px > 100
+
+
+def test_run_layer2_objects_picks_candidate_closest_to_pin() -> None:
+    """When multiple candidates match a prompt, the closest-to-pin wins.
+
+    This is the regression that surfaced on the user's real rig:
+    GroundingDINO returned several 'test tube rack' candidates across the
+    frame; the highest-confidence one flipped between near-identical
+    pin/check frames and tripped a spurious IoU=0 'object_moved' finding.
+    """
+
+    class _MultiCandidateDetector(_StaticObjectDetector):
+        def __init__(
+            self,
+            primary: tuple[float, float, float, float],
+            decoy: tuple[float, float, float, float],
+            decoy_conf: float,
+        ) -> None:
+            super().__init__()
+            self._primary = primary
+            self._decoy = decoy
+            self._decoy_conf = decoy_conf
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            # Return TWO candidates for the same prompt — the higher-conf
+            # one is the decoy (far from where the user pinned), the
+            # lower-conf one is the actual object near the pin.
+            return [
+                DetectedObject(name=prompts[0], bbox=self._decoy, confidence=self._decoy_conf),
+                DetectedObject(name=prompts[0], bbox=self._primary, confidence=0.30),
+            ]
+
+    pin_det = _StaticObjectDetector(results={"rack": (600.0, 370.0, 770.0, 435.0)})
+    ref = compute_object_reference(
+        _blank_frame(), name="rack", prompt="rack", detector=pin_det
+    )
+    assert ref is not None
+
+    # Check time: detector returns the actual rack (near the pin) at lower
+    # conf and a decoy in a totally different place at higher conf.
+    check_det = _MultiCandidateDetector(
+        primary=(605.0, 372.0, 775.0, 432.0),  # ~5px from pin → IoU very high
+        decoy=(50.0, 50.0, 200.0, 150.0),      # far away → IoU = 0
+        decoy_conf=0.85,
+    )
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=check_det,
+        embedder=None,
+        thresholds=ThresholdSpec(min_object_iou=0.5),
+    )
+    # Closest-match should win → object hasn't really moved → no flag.
+    assert out.flags == []
+    assert out.findings == []
+    assert out.min_object_iou > 0.5
+
+
+def test_run_layer2_objects_prefers_iou_over_centroid_distance() -> None:
+    """A tight nearby sub-detection shouldn't outscore a properly-sized
+    overlapping candidate.
+
+    Regression: with centroid-only matching, a small box right at the pin's
+    centroid (IoU ~0 because of size mismatch) won over a properly-sized
+    candidate offset by a few pixels (IoU ~0.9). The user reported this as
+    'IoU=0.01 but only 14px moved' — visibly different bboxes with similar
+    centers.
+    """
+
+    class _DualCandidateDetector(_StaticObjectDetector):
+        def __init__(self, pin_bbox: tuple[float, float, float, float]) -> None:
+            super().__init__()
+            self._pin_bbox = pin_bbox
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            x1, y1, x2, y2 = self._pin_bbox
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            return [
+                # Tiny tight box at the pin's exact centroid — high conf,
+                # but barely overlaps the actual pinned bbox.
+                DetectedObject(
+                    name=prompts[0],
+                    bbox=(cx - 5, cy - 5, cx + 5, cy + 5),
+                    confidence=0.80,
+                ),
+                # Properly-sized box offset by ~10px — lower conf, but
+                # high IoU vs the pin.
+                DetectedObject(
+                    name=prompts[0],
+                    bbox=(x1 + 10, y1 + 5, x2 + 10, y2 + 5),
+                    confidence=0.40,
+                ),
+            ]
+
+    pin_bbox = (100.0, 100.0, 300.0, 300.0)
+    pin_det = _StaticObjectDetector(results={"rack": pin_bbox})
+    ref = compute_object_reference(
+        _blank_frame(), name="rack", prompt="rack", detector=pin_det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=_DualCandidateDetector(pin_bbox),
+        embedder=None,
+        thresholds=ThresholdSpec(min_object_iou=0.5),
+    )
+    # The properly-sized offset candidate has IoU > 0.5 against the pin,
+    # so the test passes and no object_moved fires.
+    assert out.flags == []
+    assert out.min_object_iou > 0.5
+
+
+def test_run_layer2_objects_rejects_workspace_envelope() -> None:
+    """A huge envelope detection labeled as the prompt shouldn't win the match.
+
+    Real-rig regression: GroundingDINO returned a 1068x603 'test tube rack'
+    bbox covering the whole workspace alongside a 156x49 pin. The
+    enveloping bbox trivially overlapped the pin (IoU 0.01), beating
+    every non-overlapping smaller candidate under IoU-first matching.
+    Filter rejects candidates whose area differs from the pin's by
+    more than 4x.
+    """
+
+    class _EnvelopeDetector(_StaticObjectDetector):
+        def __init__(self) -> None:
+            super().__init__()
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            return [
+                # Workspace-wide envelope: very different size from pin,
+                # overlaps it trivially.
+                DetectedObject(
+                    name=prompts[0],
+                    bbox=(50.0, 50.0, 1200.0, 700.0),
+                    confidence=0.40,
+                ),
+            ]
+
+    pin_det = _StaticObjectDetector(results={"rack": (600.0, 400.0, 760.0, 450.0)})
+    ref = compute_object_reference(
+        _blank_frame(), name="rack", prompt="rack", detector=pin_det
+    )
+    assert ref is not None
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=_EnvelopeDetector(),
+        embedder=None,
+        thresholds=ThresholdSpec(),
+    )
+    # Envelope rejected → treated as missing rather than a bogus match.
+    assert "object_missing" in out.flags
+    missing = [f for f in out.findings if f.issue == "object_missing"]
+    assert len(missing) == 1
+
+
+def test_run_layer2_objects_no_refs_returns_empty() -> None:
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[],
+        detector=_StaticObjectDetector(),
+        embedder=None,
+        thresholds=ThresholdSpec(),
+    )
+    assert out.findings == []
+    assert out.flags == []
+    assert out.num_objects_pinned == 0

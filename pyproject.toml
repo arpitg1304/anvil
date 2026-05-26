@@ -42,6 +42,7 @@ full = [
     "transformers>=4.45",
     "pillow>=10",
     "kornia>=0.8",
+    "ultralytics>=8.3",
 ]
 
 [project.scripts]
@@ -102,7 +103,11 @@ strict = false
 # public API is mostly untyped, so we also silence no-untyped-call to keep
 # the [full] dev path green.
 [[tool.mypy.overrides]]
-module = ["torch", "torch.*", "transformers", "transformers.*"]
+module = [
+    "torch", "torch.*",
+    "transformers", "transformers.*",
+    "ultralytics", "ultralytics.*",
+]
 ignore_missing_imports = true
 disable_error_code = ["no-untyped-call"]
 
