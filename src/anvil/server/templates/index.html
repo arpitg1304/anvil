@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="flex items-baseline justify-between mb-6">
+  <h1 class="text-3xl font-bold">Pins</h1>
+  <p class="text-sm text-slate-500">root: <code>{{ root }}</code></p>
+</div>
+
+{% if not pins %}
+<div class="bg-white rounded-lg shadow p-8 text-center text-slate-500">
+  <p class="text-lg mb-2">No pins found.</p>
+  <p class="text-sm">Run <code class="bg-slate-100 px-2 py-0.5 rounded">anvil pin --name &lt;name&gt;</code> from this directory and refresh.</p>
+</div>
+{% else %}
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+  {% for pin in pins %}
+  <a href="/pin/{{ pin.name }}" class="bg-white rounded-lg shadow hover:shadow-md transition overflow-hidden">
+    <img src="/pin/{{ pin.name }}/reference.png" alt="{{ pin.name }}" class="w-full aspect-video object-cover bg-slate-200">
+    <div class="p-4">
+      <h2 class="font-semibold text-lg truncate">{{ pin.name }}</h2>
+      {% if pin.task %}<p class="text-sm text-slate-600 truncate mt-1">{{ pin.task }}</p>{% endif %}
+      <p class="text-xs text-slate-400 mt-2">{{ pin.pinned_at }}</p>
+      <div class="flex flex-wrap gap-2 mt-3 text-xs">
+        {% if pin.aruco_present %}
+        <span class="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded">aruco</span>
+        {% endif %}
+        {% if pin.embedding_present %}
+        <span class="bg-blue-100 text-blue-800 px-2 py-0.5 rounded">embedder</span>
+        {% endif %}
+        {% if pin.keypoints_present %}
+        <span class="bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded">keypoints</span>
+        {% endif %}
+        {% if pin.objects %}
+        <span class="bg-amber-100 text-amber-800 px-2 py-0.5 rounded">
+          {{ pin.objects|length }} object{{ '' if pin.objects|length == 1 else 's' }}
+        </span>
+        {% endif %}
+        <span class="bg-slate-100 text-slate-600 px-2 py-0.5 rounded">
+          {{ pin.diff_count }} diff{{ '' if pin.diff_count == 1 else 's' }}
+        </span>
+      </div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
