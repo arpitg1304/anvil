@@ -113,3 +113,20 @@ All notable changes to Anvil are documented here. Format loosely follows
   `min_object_appearance_cosine` (0.85 default).
 - 115 tests across all layers, models, persistence, CLI, and diff
   renderer. `mypy --strict` and `ruff` clean across 24 source files.
+- `anvil guard` — wraps an arbitrary recording command with a
+  pre-flight `check` against a pinned reference. On WARNING, the
+  default is to prompt the operator interactively (configurable via
+  `--on-warning {prompt|tag|block}`); on FAILED, blocks by default
+  (`--on-failed {block|prompt|proceed}`). When `--dataset-dir` is
+  supplied, snapshots the directory before/after the record command
+  and writes per-episode sidecars under `<dataset>/anvil/`.
+- `anvil.sidecar` — LeRobotDataset v3 sidecar writer:
+  - `snapshot_episodes()` lists `videos/*/episode_NNNNNN/` directories.
+  - `write_sidecars()` writes one `EpisodeReport` JSON per new episode
+    under `<dataset>/anvil/`.
+  - `write_session_manifest_hash()` drops a `manifest_hash.txt` next to
+    the sidecars naming the pin the session was checked against.
+- `check_cmd` refactored to share a `_run_check` helper with
+  `guard_cmd` — same pipeline, same diff rendering, no code duplication.
+- 132 tests across all layers, models, persistence, CLI, sidecar, and
+  diff renderer. `mypy --strict` and `ruff` clean across 26 source files.
