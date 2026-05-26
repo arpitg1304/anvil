@@ -280,10 +280,96 @@ def test_check_pin_hash_matches_filesystem(tmp_path: Path) -> None:
 # --- guard ---------------------------------------------------------------
 
 
-def test_guard_is_explicit_not_implemented() -> None:
+def test_guard_help_lists_required_options() -> None:
+    result = CliRunner().invoke(cli, ["guard", "--help"])
+    assert result.exit_code == 0
+    for flag in ("--against", "--record-cmd", "--dataset-dir", "--on-warning"):
+        assert flag in result.output
+
+
+def test_guard_missing_pin_exits_with_error(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         cli,
-        ["guard", "--against", "p", "--record-cmd", "echo hi"],
+        [
+            "guard",
+            "--against", "no-such-pin",
+            "--record-cmd", "true",
+            "--root", str(tmp_path / "pins"),
+        ],
     )
-    assert result.exit_code != 0
-    assert "week 3" in result.output.lower()
+    assert result.exit_code == 3
+
+
+def test_guard_runs_record_cmd_and_writes_sidecars(tmp_path: Path) -> None:
+    # Pin a static image so the pre-flight check passes.
+    img_path = tmp_path / "ref.png"
+    _write_image(img_path)
+    pin_root = tmp_path / "pins"
+    pin_result = CliRunner().invoke(
+        cli,
+        [
+            "pin", "--name", "p",
+            "--camera-driver", "file", "--camera", str(img_path),
+            "--root", str(pin_root),
+        ],
+    )
+    assert pin_result.exit_code == 0, pin_result.output
+
+    dataset = tmp_path / "dataset"
+    (dataset / "videos" / "chunk-000").mkdir(parents=True)
+    # Fake record command: just create a new episode dir + a video file.
+    record_cmd = (
+        f"sh -c 'mkdir -p {dataset}/videos/chunk-000/episode_000001 && "
+        f"touch {dataset}/videos/chunk-000/episode_000001/cam.mp4'"
+    )
+    result = CliRunner().invoke(
+        cli,
+        [
+            "guard",
+            "--against", "p",
+            "--camera-driver", "file", "--camera", str(img_path),
+            "--root", str(pin_root),
+            "--dataset-dir", str(dataset),
+            "--record-cmd", record_cmd,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    sidecar = dataset / "anvil" / "episode_000001.anvil.json"
+    assert sidecar.exists(), f"expected sidecar at {sidecar}"
+    payload = json.loads(sidecar.read_text())
+    assert payload["episode_id"] == "episode_000001"
+    assert payload["pin"]["name"] == "p"
+    assert (dataset / "anvil" / "manifest_hash.txt").exists()
+
+
+def test_guard_blocks_on_failed_by_default(tmp_path: Path) -> None:
+    # Pin one image, then point the pre-flight at a wildly different image
+    # to force a FAILED status. --on-failed defaults to block.
+    pinned = _write_image(tmp_path / "dark.png", color=(20, 20, 20))
+    drifted = _write_image(tmp_path / "bright.png", color=(220, 220, 220))
+    pin_root = tmp_path / "pins"
+    CliRunner().invoke(
+        cli,
+        [
+            "pin", "--name", "p",
+            "--camera-driver", "file", "--camera", str(pinned),
+            "--root", str(pin_root),
+        ],
+    )
+    dataset = tmp_path / "dataset"
+    record_cmd = f"sh -c 'mkdir -p {dataset}/videos/chunk-000/episode_000001'"
+    result = CliRunner().invoke(
+        cli,
+        [
+            "guard",
+            "--against", "p",
+            "--camera-driver", "file", "--camera", str(drifted),
+            "--root", str(pin_root),
+            "--dataset-dir", str(dataset),
+            "--record-cmd", record_cmd,
+        ],
+    )
+    # Blocked → exit code is the check's status code, not the record cmd's.
+    assert result.exit_code in (1, 2), result.output
+    # Record command should NOT have run.
+    assert not (dataset / "videos" / "chunk-000" / "episode_000001").exists()

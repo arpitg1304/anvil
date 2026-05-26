@@ -113,3 +113,42 @@ All notable changes to Anvil are documented here. Format loosely follows
   `min_object_appearance_cosine` (0.85 default).
 - 115 tests across all layers, models, persistence, CLI, and diff
   renderer. `mypy --strict` and `ruff` clean across 24 source files.
+- `anvil guard` — wraps an arbitrary recording command with a
+  pre-flight `check` against a pinned reference. On WARNING, the
+  default is to prompt the operator interactively (configurable via
+  `--on-warning {prompt|tag|block}`); on FAILED, blocks by default
+  (`--on-failed {block|prompt|proceed}`). When `--dataset-dir` is
+  supplied, snapshots the directory before/after the record command
+  and writes per-episode sidecars under `<dataset>/anvil/`.
+- `anvil.sidecar` — LeRobotDataset v3 sidecar writer:
+  - `snapshot_episodes()` lists `videos/*/episode_NNNNNN/` directories.
+  - `write_sidecars()` writes one `EpisodeReport` JSON per new episode
+    under `<dataset>/anvil/`.
+  - `write_session_manifest_hash()` drops a `manifest_hash.txt` next to
+    the sidecars naming the pin the session was checked against.
+- `check_cmd` refactored to share a `_run_check` helper with
+  `guard_cmd` — same pipeline, same diff rendering, no code duplication.
+- 132 tests across all layers, models, persistence, CLI, sidecar, and
+  diff renderer. `mypy --strict` and `ruff` clean across 26 source files.
+- `anvil-inspect` — read-only localhost web UI for browsing pins.
+  FastAPI + Jinja2 + Tailwind via CDN, no build step. Launched as a
+  separate console script (the three CLI verbs stay locked at
+  pin/check/guard).
+  - Home (`/`): grid of all pins under `.anvil/` with reference
+    thumbnails, pinned-at dates, and tag badges (aruco, embedder,
+    keypoints, objects, diff count).
+  - Pin detail (`/pin/<name>`): full reference image, manifest summary,
+    named-object list with bboxes, raw `manifest.yaml` in a collapsible
+    panel, and a diff-history gallery sorted newest-first.
+  - Static-file routes for `reference.png` and individual diff PNGs,
+    both with path-traversal protection.
+- `anvil.server` package — FastAPI app factory in `app.py`, console
+  script entry point in `main.py`, three Jinja2 templates. The
+  inspector reads from disk on every request; no caching, no DB, no
+  shared state.
+- Main install now pulls `fastapi`, `uvicorn`, `jinja2` (~10MB
+  combined) for the inspector. Layer-1-only users still don't need
+  the `[full]` extra.
+- 143 tests across all layers, models, persistence, CLI, sidecar,
+  diff renderer, and server. `mypy --strict` and `ruff` clean across
+  28 source files.
