@@ -321,6 +321,64 @@ def test_compute_object_reference_returns_none_when_not_detected() -> None:
     assert ref is None
 
 
+def test_compute_object_references_batches_single_detector_call() -> None:
+    """The batch API must invoke ``detector.detect`` exactly once."""
+
+    class _CountingDetector(_StaticObjectDetector):
+        def __init__(self) -> None:
+            super().__init__(
+                results={
+                    "red cube": (10.0, 20.0, 110.0, 120.0),
+                    "blue plate": (300.0, 50.0, 500.0, 250.0),
+                }
+            )
+            self.detect_calls = 0
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            self.detect_calls += 1
+            return super().detect(frame, prompts)
+
+    from anvil.layers.layer2_structural import compute_object_references
+
+    det = _CountingDetector()
+    pairs = [("cube", "red cube"), ("plate", "blue plate")]
+    results = compute_object_references(_blank_frame(), pairs, det)
+    assert det.detect_calls == 1
+    names_to_refs = dict(results)
+    assert names_to_refs["cube"] is not None
+    assert names_to_refs["plate"] is not None
+    assert names_to_refs["cube"].bbox == (10.0, 20.0, 110.0, 120.0)
+
+
+def test_compute_object_references_dedupes_same_prompt() -> None:
+    """Two object names sharing one prompt should bind to the same bbox."""
+
+    class _Det(_StaticObjectDetector):
+        def __init__(self) -> None:
+            super().__init__(results={"robot gripper": (10.0, 10.0, 110.0, 110.0)})
+            self.seen_prompts: list[list[str]] | None = None
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            # Capture what prompts the batch API passed in.
+            self.seen_prompts = list(prompts)
+            return super().detect(frame, prompts)
+
+    from anvil.layers.layer2_structural import compute_object_references
+
+    det = _Det()
+    results = compute_object_references(
+        _blank_frame(),
+        [("left", "robot gripper"), ("right", "robot gripper")],
+        det,
+    )
+    # Detector should only see the unique prompt once, not duplicated.
+    assert det.seen_prompts == ["robot gripper"]
+    by_name = dict(results)
+    assert by_name["left"] is not None
+    assert by_name["right"] is not None
+    assert by_name["left"].bbox == by_name["right"].bbox
+
+
 def test_compute_object_reference_captures_bbox() -> None:
     det = _StaticObjectDetector(
         results={"red cube": (10.0, 20.0, 110.0, 120.0)}
