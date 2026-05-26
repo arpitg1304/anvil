@@ -67,21 +67,35 @@ class GroundingDINODetector(ObjectDetector):
         frame: Frame,
         prompts: list[str],
         *,
-        confidence_threshold: float = 0.15,
+        confidence_threshold: float = 0.10,
     ) -> list[DetectedObject]:
         if not self._loaded:
             self.load()
         if not prompts:
             return []
+        # One forward pass per prompt rather than a period-joined batch:
+        # when multiple disparate prompts are passed together, GroundingDINO
+        # fuses tokens into combined labels ("robot gripper test tube rack")
+        # that can't be reliably routed back to a single input prompt.
+        # Per-prompt calls produce clean, unambiguous labels at the cost of
+        # one extra forward pass per object — ~200ms each, well under the
+        # overall check budget.
+        out: list[DetectedObject] = []
+        for prompt in prompts:
+            out.extend(self._detect_single(frame, prompt, confidence_threshold))
+        return out
+
+    def _detect_single(
+        self, frame: Frame, prompt: str, confidence_threshold: float
+    ) -> list[DetectedObject]:
         import torch
         from PIL import Image
 
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb)
-        # GroundingDINO expects all classes as a single period-delimited string,
-        # all lowercase per the model card.
-        prompts_lower = [p.lower() for p in prompts]
-        text = ". ".join(prompts_lower) + "."
+        prompt_lower = prompt.lower()
+        # Single-prompt grounding text — terminating period per the model card.
+        text = prompt_lower + "."
 
         inputs = self._processor(
             images=img, text=text, return_tensors="pt"
@@ -94,64 +108,44 @@ class GroundingDINODetector(ObjectDetector):
             threshold=confidence_threshold,
             text_threshold=confidence_threshold,
             target_sizes=[img.size[::-1]],
-            text_labels=[prompts_lower],
+            text_labels=[[prompt_lower]],
         )[0]
 
-        # GroundingDINO can label a detection with a *subset* or
-        # *combination* of input phrases ("tube rack" matching "test tube
-        # rack", or "test tube wooden rack" combining two). Match each
-        # detection back to whichever input prompt it most resembles, and
-        # keep one best-confidence box per original prompt.
-        best_by_prompt: dict[str, DetectedObject] = {}
+        # Even per-prompt, GroundingDINO sometimes returns subset labels
+        # ("rack" when the prompt was "test tube rack"). Any detection
+        # whose label overlaps the prompt is valid — we keep them all and
+        # rebind the name to the caller's original (cased) prompt.
+        out: list[DetectedObject] = []
         boxes = results["boxes"]
         scores = results["scores"]
         labels = results.get("text_labels", results.get("labels", []))
 
         for box, score, label in zip(boxes, scores, labels, strict=False):
             label_str = str(label).lower().strip()
-            matched = _match_prompt(label_str, prompts_lower)
-            if matched is None:
+            if not _prompt_overlap(label_str, prompt_lower):
                 continue
-            # Return the original (caller-supplied) casing so downstream
-            # code that keyed off the input prompt string still matches.
-            original = prompts[prompts_lower.index(matched)]
-            detected = DetectedObject(
-                name=original,
-                bbox=(
-                    float(box[0]),
-                    float(box[1]),
-                    float(box[2]),
-                    float(box[3]),
-                ),
-                confidence=float(score),
+            out.append(
+                DetectedObject(
+                    name=prompt,
+                    bbox=(
+                        float(box[0]),
+                        float(box[1]),
+                        float(box[2]),
+                        float(box[3]),
+                    ),
+                    confidence=float(score),
+                )
             )
-            current = best_by_prompt.get(original)
-            if current is None or detected.confidence > current.confidence:
-                best_by_prompt[original] = detected
-        return list(best_by_prompt.values())
+        return out
 
 
-def _match_prompt(label: str, prompts: list[str]) -> str | None:
-    """Pick the input prompt that best matches a returned label.
-
-    Prefers exact match, then substring match in either direction
-    (handles GroundingDINO's habit of returning "tube rack" for an input
-    of "test tube rack"). Returns the first matching prompt; tie-breaks
-    on input order.
-    """
-    if label in prompts:
-        return label
-    candidates: list[tuple[int, str]] = []
-    for p in prompts:
-        if p in label or label in p:
-            # Score by character-overlap so "test tube rack" beats "tube"
-            # for a "test tube rack wooden block" label.
-            overlap = len(set(label.split()) & set(p.split()))
-            candidates.append((overlap, p))
-    if not candidates:
-        return None
-    candidates.sort(key=lambda x: -x[0])
-    return candidates[0][1]
+def _prompt_overlap(label: str, prompt: str) -> bool:
+    """True if ``label`` and ``prompt`` share at least one non-trivial token."""
+    if label == prompt or label in prompt or prompt in label:
+        return True
+    label_tokens = set(label.split())
+    prompt_tokens = set(prompt.split())
+    return bool(label_tokens & prompt_tokens)
 
 
 __all__ = ["GroundingDINODetector"]

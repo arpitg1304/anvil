@@ -85,21 +85,20 @@ class YOLOWorldDetector(ObjectDetector):
         cls_indices = boxes.cls.detach().to("cpu").numpy().astype(int)
         names_map: dict[int, str] = dict(result.names)
 
-        # Keep only the best-confidence detection per prompt. Multiple
-        # candidates for the same class are common; downstream code wants
-        # one canonical "the red cube" location to compare with the pin.
-        best_by_name: dict[str, DetectedObject] = {}
+        # Return *all* candidates above threshold. Multiple detections per
+        # class are normal on cluttered scenes; caller picks best-conf for
+        # pin and closest-to-pin-bbox for check (see Layer 2 orchestrator).
+        out: list[DetectedObject] = []
         for box, conf, cls_idx in zip(xyxy, confs, cls_indices, strict=False):
             prompt_name = names_map.get(int(cls_idx), str(cls_idx))
-            detected = DetectedObject(
-                name=prompt_name,
-                bbox=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
-                confidence=float(conf),
+            out.append(
+                DetectedObject(
+                    name=prompt_name,
+                    bbox=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+                    confidence=float(conf),
+                )
             )
-            current = best_by_name.get(prompt_name)
-            if current is None or detected.confidence > current.confidence:
-                best_by_name[prompt_name] = detected
-        return list(best_by_name.values())
+        return out
 
 
 __all__ = ["YOLOWorldDetector"]

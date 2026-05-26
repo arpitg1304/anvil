@@ -460,6 +460,62 @@ def test_run_layer2_objects_flags_position_drift(tmp_path: Path) -> None:
     assert out.max_object_drift_px > 100
 
 
+def test_run_layer2_objects_picks_candidate_closest_to_pin() -> None:
+    """When multiple candidates match a prompt, the closest-to-pin wins.
+
+    This is the regression that surfaced on the user's real rig:
+    GroundingDINO returned several 'test tube rack' candidates across the
+    frame; the highest-confidence one flipped between near-identical
+    pin/check frames and tripped a spurious IoU=0 'object_moved' finding.
+    """
+
+    class _MultiCandidateDetector(_StaticObjectDetector):
+        def __init__(
+            self,
+            primary: tuple[float, float, float, float],
+            decoy: tuple[float, float, float, float],
+            decoy_conf: float,
+        ) -> None:
+            super().__init__()
+            self._primary = primary
+            self._decoy = decoy
+            self._decoy_conf = decoy_conf
+
+        def detect(self, frame, prompts, *, confidence_threshold=0.1):  # type: ignore[override]
+            # Return TWO candidates for the same prompt — the higher-conf
+            # one is the decoy (far from where the user pinned), the
+            # lower-conf one is the actual object near the pin.
+            return [
+                DetectedObject(name=prompts[0], bbox=self._decoy, confidence=self._decoy_conf),
+                DetectedObject(name=prompts[0], bbox=self._primary, confidence=0.30),
+            ]
+
+    pin_det = _StaticObjectDetector(results={"rack": (600.0, 370.0, 770.0, 435.0)})
+    ref = compute_object_reference(
+        _blank_frame(), name="rack", prompt="rack", detector=pin_det
+    )
+    assert ref is not None
+
+    # Check time: detector returns the actual rack (near the pin) at lower
+    # conf and a decoy in a totally different place at higher conf.
+    check_det = _MultiCandidateDetector(
+        primary=(605.0, 372.0, 775.0, 432.0),  # ~5px from pin → IoU very high
+        decoy=(50.0, 50.0, 200.0, 150.0),      # far away → IoU = 0
+        decoy_conf=0.85,
+    )
+    out = run_layer2_objects(
+        current_frame=_blank_frame(),
+        object_refs=[ref],
+        detector=check_det,
+        embedder=None,
+        thresholds=ThresholdSpec(min_object_iou=0.5),
+    )
+    # Closest-match should win → object hasn't really moved → no flag.
+    assert out.flags == []
+    assert out.findings == []
+    assert out.min_object_iou > 0.5
+
+
 def test_run_layer2_objects_no_refs_returns_empty() -> None:
     out = run_layer2_objects(
         current_frame=_blank_frame(),
