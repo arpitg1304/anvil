@@ -23,6 +23,7 @@ from rich.console import Console
 
 from anvil import __version__
 from anvil.cameras import open_camera
+from anvil.diff import render_check_diff
 from anvil.errors import AnvilError, PinNotFound
 from anvil.layers.layer1_fast import (
     compute_aruco_reference,
@@ -338,10 +339,23 @@ def check_cmd(
             provenance=_provenance(),
         )
 
+        diff_path: Path | None = None
+        if report.status != "passed":
+            diff_path = render_check_diff(
+                current_frame=frame,
+                layer1=layer1,
+                aruco_ref=aruco_ref,
+                pin_dir=pin_dir,
+                pin_name=manifest.name,
+                threshold_deg=manifest.thresholds.max_camera_pose_drift_deg,
+            )
+
         if json_only:
             click.echo(report.model_dump_json())
         else:
             _render_check_summary(report, layer1.scene_drift_source)
+            if diff_path is not None:
+                _console.print(f"  diff:          {diff_path}")
 
         sys.exit(
             {
