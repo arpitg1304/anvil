@@ -51,6 +51,30 @@ def _layer1_with_pose_drift(deg: float) -> Layer1Output:
     )
 
 
+def test_render_handles_mismatched_resolution(tmp_path: Path) -> None:
+    """Reference and current frames at different sizes must not crash hconcat.
+
+    Regression: a webcam that came up at 640x480 produced a current frame
+    that couldn't be stacked beside a 1920x1080 reference, raising an
+    OpenCV assertion. The renderer now resizes the current panel to the
+    reference height.
+    """
+    aruco_ref = _seed_pin(tmp_path)  # reference.png is 480x640
+    # Current frame at a totally different resolution.
+    current = np.full((720, 1280, 3), 128, dtype=np.uint8)
+    out = render_check_diff(
+        current_frame=current,
+        layer1=_layer1_with_pose_drift(1.5),
+        aruco_ref=aruco_ref,
+        pin_dir=tmp_path,
+        pin_name="test_pin",
+        threshold_deg=1.0,
+    )
+    assert out.exists()
+    img = cv2.imread(str(out))
+    assert img is not None  # rendered without crashing
+
+
 def test_render_writes_png_under_diffs(tmp_path: Path) -> None:
     aruco_ref = _seed_pin(tmp_path)
     current = _marker_frame(marker_id=3)
