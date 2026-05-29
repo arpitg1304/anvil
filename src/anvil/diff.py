@@ -100,6 +100,20 @@ def render_check_diff(
     ref_panel = _stamp_panel_tag(ref_panel, _REF_PANEL_TAG)
     cur_panel = _stamp_panel_tag(cur_panel, _CUR_PANEL_TAG)
 
+    # hconcat requires equal heights. The CLI already resizes the live frame
+    # to the pin resolution, but guard the renderer too so any caller with
+    # mismatched panels gets a readable diff instead of an OpenCV assertion.
+    if cur_panel.shape[0] != ref_panel.shape[0]:
+        scale = ref_panel.shape[0] / cur_panel.shape[0]
+        cur_panel = cast(
+            Frame,
+            cv2.resize(
+                cur_panel,
+                (round(cur_panel.shape[1] * scale), ref_panel.shape[0]),
+                interpolation=cv2.INTER_AREA,
+            ),
+        )
+
     body = cast(Frame, cv2.hconcat([ref_panel, cur_panel]))
     canvas = _prepend_header(body, layer1=layer1, pin_name=pin_name)
 
