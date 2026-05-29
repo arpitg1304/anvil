@@ -24,6 +24,7 @@ from rich.console import Console
 
 from anvil import __version__
 from anvil.cameras import open_camera
+from anvil.cameras.base import Frame
 from anvil.diff import render_check_diff
 from anvil.errors import AnvilError, PinNotFound
 from anvil.layers.layer1_fast import (
@@ -191,6 +192,16 @@ def cli() -> None:
         "prompt write 'name=prompt' (e.g. 'rack=test tube rack')."
     ),
 )
+@click.option(
+    "--resolution",
+    default="1920x1080",
+    show_default=True,
+    help=(
+        "Capture resolution as WIDTHxHEIGHT (webcam driver only). The pin "
+        "records whatever the camera actually delivers; every future check "
+        "is forced to match it. Pass e.g. '1280x720' for lower-res rigs."
+    ),
+)
 def pin_cmd(
     name: str,
     camera_device: str,
@@ -200,9 +211,11 @@ def pin_cmd(
     pin_root: Path | None,
     force: bool,
     objects: tuple[str, ...],
+    resolution: str,
 ) -> None:
     """Capture the current scene as a reference manifest."""
     try:
+        requested_resolution = _parse_resolution(resolution)
         pin_dir = pin_directory(name, root=pin_root)
         if pin_dir.exists() and any(pin_dir.iterdir()) and not force:
             raise click.ClickException(
@@ -221,7 +234,9 @@ def pin_cmd(
                     shutil.rmtree(child)
         pin_dir.mkdir(parents=True, exist_ok=True)
 
-        with open_camera(camera_driver, camera_device) as cam:
+        with open_camera(
+            camera_driver, camera_device, resolution=requested_resolution
+        ) as cam:
             frame = cam.grab()
 
         ref_path = pin_dir / REFERENCE_IMAGE_FILENAME
@@ -436,6 +451,53 @@ _EXIT_FOR_STATUS: dict[Status, int] = {
 }
 
 
+def _parse_resolution(value: str) -> tuple[int, int] | None:
+    """Parse a 'WIDTHxHEIGHT' string into (width, height).
+
+    Returns ``None`` for an empty string (caller lets the camera pick).
+    Raises ``click.BadParameter`` on a malformed value so the user gets a
+    clear message instead of a downstream crash.
+    """
+    if not value.strip():
+        return None
+    parts = value.lower().split("x")
+    if len(parts) != 2 or not all(p.strip().isdigit() for p in parts):
+        raise click.BadParameter(
+            f"--resolution must be WIDTHxHEIGHT (e.g. 1920x1080), got {value!r}"
+        )
+    return (int(parts[0]), int(parts[1]))
+
+
+def _match_pin_resolution(
+    frame: Frame,
+    pin_resolution: tuple[int, int] | None,
+) -> Frame:
+    """Force ``frame`` to the pin's (width, height), warning if it differs.
+
+    Cameras don't always honor a requested resolution — a webcam that came
+    up at 640x480 this session can't be coerced to the 1920x1080 the pin
+    was captured at. Every downstream comparison (ArUco positions,
+    keypoints, object bboxes) assumes a shared pixel space, so we resize
+    the live frame to the pin's resolution rather than silently producing
+    garbage drift numbers (or crashing the side-by-side diff render).
+    """
+    if pin_resolution is None:
+        return frame
+    target_w, target_h = pin_resolution
+    h, w = frame.shape[:2]
+    if (w, h) == (target_w, target_h):
+        return frame
+    _console.print(
+        f"[yellow]![/] Camera returned {w}x{h} but the pin is "
+        f"{target_w}x{target_h}; resizing to match. Drift numbers are less "
+        "reliable across a resolution change — prefer a camera that can "
+        "deliver the pinned resolution, or repin at the current one."
+    )
+    return cast(
+        Frame, cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    )
+
+
 def _run_check(
     pin_name: str,
     *,
@@ -466,8 +528,10 @@ def _run_check(
 
     driver = camera_driver or manifest.camera.driver
     device = camera_device or manifest.camera.device
-    with open_camera(driver, device) as cam:
+    pin_resolution = manifest.camera.resolution
+    with open_camera(driver, device, resolution=pin_resolution) as cam:
         frame = cam.grab()
+    frame = _match_pin_resolution(frame, pin_resolution)
 
     layer1 = run_layer1(
         current_frame=frame,

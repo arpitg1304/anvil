@@ -12,9 +12,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
 from click.testing import CliRunner
 
-from anvil.cli import cli
+from anvil.cli import _parse_resolution, cli
 from anvil.manifest import (
     MANIFEST_FILENAME,
     REFERENCE_IMAGE_FILENAME,
@@ -28,6 +29,27 @@ def _write_image(path: Path, color: tuple[int, int, int] = (10, 20, 30)) -> Path
     img[:, :] = color
     assert cv2.imwrite(str(path), img)
     return path
+
+
+# --- --resolution parsing ------------------------------------------------
+
+
+def test_parse_resolution_valid() -> None:
+    assert _parse_resolution("1920x1080") == (1920, 1080)
+    assert _parse_resolution("1280X720") == (1280, 720)  # case-insensitive
+
+
+def test_parse_resolution_empty_is_none() -> None:
+    assert _parse_resolution("") is None
+    assert _parse_resolution("   ") is None
+
+
+def test_parse_resolution_malformed_raises() -> None:
+    import click
+
+    for bad in ["1920", "1920x", "axb", "1920x1080x720", "1920*1080"]:
+        with pytest.raises(click.BadParameter):
+            _parse_resolution(bad)
 
 
 # --- top-level -----------------------------------------------------------
