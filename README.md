@@ -19,9 +19,9 @@ Anvil keeps your scene true.
 > **Status:** v0.1.0 in active development. Schema is the only stable surface;
 > CLI and internals will change until 0.1.0 ships.
 
-![Annotated diff image: reference frame on the left, drifted frame on the right, with red ArUco marker outlines showing rotation deltas and a header strip of scores](docs/img/sample_diff.jpg)
+![Annotated diff image from a real overhead rig: reference frame on the left shows a test tube rack centered; current frame on the right shows the rack moved and rotated, with a red bbox marking the new position and an IoU score](docs/img/sample_diff.jpg)
 
-> *An `anvil check` diff after the camera was rotated 1.5°: reference on the left, live frame on the right. Marker outlines turn red when their rotation delta exceeds threshold; the header strip carries the scene/lighting/pose scores and flags.*
+> *A real `anvil check` diff after the test tube rack was moved between sessions. Reference (left) vs live frame (right) on the same overhead rig. The red bbox in the current panel marks the rack's new position with `IoU=0.38` against the pin; ArUco markers (green) confirm the camera itself didn't move. Header strip carries the Layer 1 scores; the per-object finding fires from Layer 2's GroundingDINO + DINOv3 region cosine.*
 
 ## Why Anvil
 
@@ -44,23 +44,28 @@ failures with the conditions they were collected under.
 
 ## Install
 
-```bash
-# Bare install: Layer 1 fast path (histogram + ArUco + lighting), guard, and
-# the inspector UI. CPU-only, works on a laptop with a webcam.
-pip install anvil-robotics
-
-# [full] adds the ML cascade: DINOv3 (scene embedding), DISK + LightGlue
-# (marker-free camera pose), GroundingDINO + YOLO-World (named-object
-# detection). Needs ~3GB of model weights and a GPU for reasonable speed.
-pip install anvil-robotics[full]
-```
-
-**From source** (until v0.1.0 is published):
+v0.1.0 isn't on PyPI yet — install from source for now:
 
 ```bash
 git clone https://github.com/arpitg1304/anvil && cd anvil
+
+# Bare install: Layer 1 fast path (histogram + ArUco + lighting), guard,
+# and the inspector UI. CPU-only, works on a laptop with a webcam.
 uv sync --group dev
+
+# Or, with the ML cascade — DINOv3 (scene embedding), DISK + LightGlue
+# (marker-free camera pose), GroundingDINO + YOLO-World (named-object
+# detection). Needs ~3GB of model weights and a GPU for reasonable speed.
+uv sync --extra full
+
 uv run anvil --help
+```
+
+Once v0.1.0 ships to PyPI you'll be able to:
+
+```bash
+pip install anvil-robotics            # bare
+pip install anvil-robotics[full]      # + ML cascade
 ```
 
 ## Quick start
@@ -157,6 +162,17 @@ checklist that the tool enforces, not a wiki page nobody reads.
 check before invoking the recorder. On WARNING it asks; on FAILED it
 blocks. Episodes that do get recorded land with a sidecar JSON under
 `./data/anvil/`, so the same deviation context follows the data downstream.
+
+**Camera-pose drift looks like this in the diff:**
+
+![Annotated diff after a 1.5° camera rotation: every ArUco marker outline turns red, with the rotation delta labeled on each](docs/img/sample_diff_rotation.jpg)
+
+> *A `check` diff after a deliberate 1.5° camera nudge — every ArUco
+> marker outline turns red and gets its per-marker rotation delta
+> printed inline (`d=-1.51deg`, etc.). The header shows the aggregate
+> `pose_drift: 1.48deg` and the `camera_pose_drift` flag. This is the
+> classic "ceiling mount sagged overnight" failure mode the hero image's
+> object check can't catch alone.*
 
 ## Inspector UI
 
