@@ -16,7 +16,7 @@ post-collection; Anvil keeps the rig consistent pre-collection.
 
 1. **[anvil_plan.md](anvil_plan.md)** — full project specification. The
    *what*. Source of truth on goals, architecture, schema, scope.
-2. **[prompt.txt](prompt.txt)** — working instructions. The *how*. Order
+2. **[.claude/prompt.txt](.claude/prompt.txt)** — working instructions. The *how*. Order
    of operations, non-negotiables, scope guards, tooling defaults. Read
    end-to-end every fresh session.
 3. **[docs/metadata_schema.md](docs/metadata_schema.md)** — v0.1 sidecar
@@ -24,7 +24,7 @@ post-collection; Anvil keeps the rig consistent pre-collection.
 
 Anything in this file (CLAUDE.md) defers to those three.
 
-## Non-negotiables (lifted from prompt.txt §"NON-NEGOTIABLES")
+## Non-negotiables (lifted from .claude/prompt.txt §"NON-NEGOTIABLES")
 
 - The v0.1 schema in `docs/metadata_schema.md`. Forge will read against it.
 - The 9-flag vocabulary in schema §6. No new flags in v0.1.
@@ -51,7 +51,7 @@ src/anvil/
 See [ROADMAP.md](ROADMAP.md) for status; [CHANGELOG.md](CHANGELOG.md) for
 what landed when.
 
-## Working style (lifted from prompt.txt §"WORKING STYLE")
+## Working style (lifted from .claude/prompt.txt §"WORKING STYLE")
 
 - **Tooling:** `uv` for package management (no poetry / setup.py /
   requirements.txt). Ruff for lint+format. Mypy `--strict` on

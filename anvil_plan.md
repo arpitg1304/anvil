@@ -403,7 +403,7 @@ Hard scoping. Anything tagged **OUT** is post-MVP.
 
 ## 10. Hardware assumptions
 
-Aligned with your basement rig:
+Targeted at a typical solo-researcher rig:
 - One ceiling-mounted camera (USB or IP, doesn't matter)
 - A workstation with at least 12GB VRAM (RTX 3060 12GB is the floor for the full stack; 4090 is comfortable)
 - Optional: a few printed ArUco markers on the workspace edges (huge accuracy win for pose drift detection, ~$0 to add)
