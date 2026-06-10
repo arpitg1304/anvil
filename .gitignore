@@ -38,5 +38,6 @@ htmlcov/
 
 # Internal planning + AI-assistant scaffolding. Kept locally but not shipped.
 anvil_plan.md
+anvil_landscape.md
 CLAUDE.md
 .claude/
