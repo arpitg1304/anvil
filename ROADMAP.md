@@ -1,6 +1,6 @@
 # Roadmap
 
-Living document. Full context: [anvil_plan.md](anvil_plan.md).
+Living document. Tracks the v0.1.x milestones and post-MVP candidates.
 
 ## v0.1.0 — MVP (3 weeks)
 

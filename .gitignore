@@ -35,3 +35,8 @@ htmlcov/
 # Local pin directories. Anvil pins are meant to be committed to the *user's*
 # data repo, not to Anvil's own source tree.
 .anvil/
+
+# Internal planning + AI-assistant scaffolding. Kept locally but not shipped.
+anvil_plan.md
+CLAUDE.md
+.claude/

@@ -5,7 +5,8 @@ directory, this module identifies the episodes recorded in this session
 (by snapshotting the dataset directory before vs. after the record
 command runs) and writes an ``EpisodeReport`` JSON next to each one.
 
-Layout, per [anvil_plan.md §8](../../anvil_plan.md):
+Layout (mirrors LeRobotDataset v3 and slots ``anvil/`` as a sibling
+subdirectory, leaving the canonical dataset tree untouched):
 
     <dataset>/
     ├── data/chunk-000/file_000.parquet

@@ -250,8 +250,8 @@ Output: an `EpisodeReport` JSON conforming to
 [docs/metadata_schema.md](docs/metadata_schema.md), exit code (0/1/2/3),
 and on `warning`/`failed` a side-by-side annotated diff PNG.
 
-See [docs/architecture.md](docs/architecture.md) and the full plan in
-[anvil_plan.md](anvil_plan.md).
+See [docs/architecture.md](docs/architecture.md) for the cascade design and
+the threshold model.
 
 ## Finding your camera
 
