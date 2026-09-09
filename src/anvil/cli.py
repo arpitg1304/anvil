@@ -12,6 +12,8 @@ Exit codes (``check`` and ``guard`` only):
 from __future__ import annotations
 
 import platform
+import re
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -52,6 +54,7 @@ from anvil.layers.layer2_structural import (
     save_object_reference,
 )
 from anvil.manifest import (
+    DEFAULT_PIN_ROOT,
     REFERENCE_IMAGE_FILENAME,
     CameraDriver,
     CameraSpec,
@@ -396,6 +399,16 @@ def pin_cmd(
     default=False,
     help="Emit only the sidecar JSON on stdout (no Rich output).",
 )
+@click.option(
+    "--save",
+    "save_record",
+    is_flag=True,
+    default=False,
+    help=(
+        "Keep this check so you can look at it later: the report, the frame, "
+        "and a picture of what changed. See them with `anvil viewer`."
+    ),
+)
 def check_cmd(
     pin_name: str,
     camera_device: str | None,
@@ -403,6 +416,7 @@ def check_cmd(
     pin_root: Path | None,
     episode_id: str,
     json_only: bool,
+    save_record: bool,
 ) -> None:
     """Run a one-shot diff between the live scene and a pinned reference."""
     try:
@@ -413,12 +427,19 @@ def check_cmd(
             pin_root=pin_root,
             episode_id=episode_id,
         )
+        saved: Path | None = None
+        if save_record:
+            saved = save_check_record(
+                result.pin_dir, result.report, result.frame, result.diff_path
+            )
         if json_only:
             click.echo(result.report.model_dump_json())
         else:
             _render_check_summary(result.report, result.scene_drift_source)
             if result.diff_path is not None:
                 _console.print(f"  diff:          {result.diff_path}")
+            if saved is not None:
+                _console.print(f"  saved:         {saved}")
         sys.exit(_EXIT_FOR_STATUS[result.report.status])
     except PinNotFound as exc:
         _console.print(f"[bold red]✗[/] {exc}")
@@ -442,6 +463,7 @@ class _CheckResult:
     scene_drift_source: str
     pin_dir: Path
     manifest: Manifest
+    frame: Frame
 
 
 _EXIT_FOR_STATUS: dict[Status, int] = {
@@ -496,6 +518,78 @@ def _match_pin_resolution(
     return cast(
         Frame, cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
     )
+
+
+CHECKS_SUBDIR = "checks"
+
+
+_UNSAFE_IN_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _record_dir(pin_dir: Path, report: EpisodeReport) -> Path:
+    """A fresh directory for one check: ``<pin>/checks/<stamp>_<episode>``.
+
+    ``episode_id`` is operator-supplied and unconstrained by the schema, so it
+    is reduced to one safe path segment — otherwise a value containing ``/``
+    or ``..`` would write outside ``checks/``. A suffix is added rather than
+    reusing a directory, so two checks in the same second keep both records
+    instead of the second overwriting the first.
+    """
+    stamp = report.checked_at.strftime("%Y%m%dT%H%M%SZ")
+    episode = _UNSAFE_IN_NAME.sub("_", report.episode_id).strip("._") or "check"
+    base = pin_dir / CHECKS_SUBDIR
+    for suffix in ("", *(f"-{n}" for n in range(2, 100))):
+        candidate = base / f"{stamp}_{episode}{suffix}"
+        if not candidate.exists():
+            return candidate
+    raise AnvilError(f"Too many checks saved this second under {base}")
+
+
+def save_check_record(
+    pin_dir: Path,
+    report: EpisodeReport,
+    frame: Frame,
+    diff_path: Path | None = None,
+) -> Path:
+    """Persist one check under ``<pin_dir>/checks/<timestamp>_<episode>/``.
+
+    Writes the report, the frame it was taken from, a difference heat map
+    against the pinned reference, and anvil's annotated diff when one was
+    rendered (only a non-passing check gets one). ``check`` is otherwise
+    fire-and-forget: it prints a verdict and exits, leaving nothing to review
+    or compare later. Returns the directory written.
+    """
+    import cv2
+    import numpy as np
+
+    out = _record_dir(pin_dir, report)
+    try:
+        out.mkdir(parents=True)
+        (out / "report.json").write_text(
+            report.model_dump_json(indent=2), encoding="utf-8"
+        )
+        wrote = cv2.imwrite(str(out / "frame.png"), frame)
+    except OSError as exc:
+        # A failed save is reported like any other anvil error, not as a
+        # traceback — the check itself already ran and printed its verdict.
+        raise AnvilError(f"Could not save the check record under {out}: {exc}") from exc
+    if not wrote:
+        raise AnvilError(f"Could not write the check frame to {out}")
+
+    reference = pin_dir / REFERENCE_IMAGE_FILENAME
+    if reference.exists():
+        ref = cv2.imread(str(reference))
+        if ref is not None:
+            if ref.shape[:2] != frame.shape[:2]:
+                ref = cv2.resize(ref, (frame.shape[1], frame.shape[0]))
+            delta = cv2.absdiff(ref, frame).max(axis=2).astype(np.uint8)
+            heat = cv2.applyColorMap(delta, cv2.COLORMAP_JET)
+            # keep the scene readable underneath the glow
+            cv2.imwrite(str(out / "heat.png"), cv2.addWeighted(heat, 0.75, frame, 0.25, 0))
+
+    if diff_path is not None and diff_path.is_file():
+        shutil.copyfile(diff_path, out / "diff.png")
+    return out
 
 
 def _run_check(
@@ -627,7 +721,70 @@ def _run_check(
         scene_drift_source=layer1.scene_drift_source,
         pin_dir=pin_dir,
         manifest=manifest,
+        frame=frame,
     )
+
+
+@cli.command("viewer")
+@click.option(
+    "--root",
+    "pin_root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Where the pins live. Defaults to ./.anvil here.",
+)
+@click.option(
+    "--checks",
+    "checks_root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Extra directory of check records to include, laid out as "
+        "<checks>/<pin>/<id>/report.json. Only needed if something other than "
+        "`anvil check --save` wrote them."
+    ),
+)
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Interface to bind. Localhost only by default.")
+@click.option("--port", type=int, default=7788, show_default=True, help="Port to serve on.")
+@click.option("--no-browser", is_flag=True, default=False,
+              help="Don't auto-open a browser tab.")
+def viewer_cmd(
+    pin_root: Path | None,
+    checks_root: Path | None,
+    host: str,
+    port: int,
+    no_browser: bool,
+) -> None:
+    """Look at saved checks in a browser: the frames, side by side."""
+    import webbrowser
+
+    import uvicorn
+
+    from anvil.server.viewer import create_app
+
+    root = (pin_root or Path.cwd() / DEFAULT_PIN_ROOT).resolve()
+    if not root.exists():
+        _console.print(
+            f"[bold red]✗[/] No pin directory at {root}. Run `anvil pin --name ...` "
+            "first, or pass --root."
+        )
+        sys.exit(_EXIT_ERROR)
+
+    app = create_app(root, checks_root)
+    url = f"http://{host}:{port}"
+    _console.print(f"[bold blue]►[/] Anvil viewer serving from {root}\n  → {url}")
+    # Count both places records can live, so --checks is not reported as empty.
+    n = sum(1 for _ in root.glob("*/checks/*/report.json"))
+    if checks_root is not None:
+        n += sum(1 for _ in checks_root.glob("*/*/report.json"))
+    if n:
+        _console.print(f"  [dim]{n} saved check(s)[/]")
+    else:
+        _console.print("  [dim]no saved checks yet — run `anvil check --save`[/]")
+    if not no_browser:
+        webbrowser.open(url)
+    uvicorn.run(app, host=host, port=port, log_level="warning")
 
 
 @cli.command("guard")
@@ -690,9 +847,20 @@ def _run_check(
     default=None,
     help="Override pin storage root.",
 )
+@click.option(
+    "--save",
+    "save_record",
+    is_flag=True,
+    default=False,
+    help=(
+        "Keep the pre-flight check so you can look at it later — the same "
+        "record `anvil check --save` writes. See it with `anvil viewer`."
+    ),
+)
 def guard_cmd(
     pin_name: str,
     record_cmd: str,
+    save_record: bool,
     dataset_dir: Path | None,
     on_warning: str,
     on_failed: str,
@@ -728,6 +896,11 @@ def guard_cmd(
         _render_check_summary(result.report, result.scene_drift_source)
         if result.diff_path is not None:
             _console.print(f"  diff:          {result.diff_path}")
+        if save_record:
+            saved = save_check_record(
+                result.pin_dir, result.report, result.frame, result.diff_path
+            )
+            _console.print(f"  saved:         {saved}")
 
         proceed = _decide_proceed(result.report.status, on_warning, on_failed)
         if not proceed:
