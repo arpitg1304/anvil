@@ -1,0 +1,527 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>anvil scene control</title>
+<style>
+:root{
+  --bg:#0d1014; --surface:#161b22; --surface-2:#1c222b; --mat:#000;
+  --ink:#e9edf2; --ink-2:#9aa5b4; --ink-3:#6b7686;
+  --rule:#252d38; --rule-2:#333d4a;
+  --accent:#4fc3d0;
+  --pass:#3fae72; --pass-bg:#12301f;
+  --warn:#e0a33c; --warn-bg:#33260c;
+  --fail:#e2685c; --fail-bg:#3a1714;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  -webkit-font-smoothing:antialiased}
+.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  font-variant-numeric:tabular-nums}
+.lbl{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:var(--ink-3)}
+button{font:inherit}
+
+/* ---------- header ---------- */
+header{position:sticky;top:0;z-index:30;background:rgba(13,16,20,.94);
+  backdrop-filter:blur(10px);border-bottom:1px solid var(--rule)}
+.hbar{max-width:1500px;margin:0 auto;padding:12px 22px;display:flex;align-items:center;gap:14px}
+.brand{font-size:14px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;margin:0}
+.brand em{font-style:normal;color:var(--accent)}
+.brand span{color:var(--ink-3);font-weight:500;letter-spacing:.1em}
+
+main{max-width:1500px;margin:0 auto;padding:22px 22px 90px}
+
+/* ---------- section rules ---------- */
+.srule{display:flex;align-items:center;gap:14px;margin:34px 0 14px}
+.srule h2{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.11em;
+  color:var(--ink-2);margin:0;white-space:nowrap}
+.srule .r{flex:1;height:1px;background:var(--rule)}
+.srule .n{font-size:12px;color:var(--ink-3);white-space:nowrap}
+
+/* ---------- card ---------- */
+.card{background:var(--surface);border:1px solid var(--rule);border-left:4px solid var(--rule-2);
+  border-radius:8px;overflow:hidden;margin-bottom:16px}
+.card.PASSED{border-left-color:var(--pass)}
+.card.WARNING{border-left-color:var(--warn)}
+.card.FAILED{border-left-color:var(--fail)}
+
+/* headline: verdict, time, pin */
+.chead{display:flex;align-items:center;gap:15px;flex-wrap:wrap;padding:15px 18px;
+  border-bottom:1px solid var(--rule)}
+.badge{font-size:11.5px;font-weight:700;letter-spacing:.1em;padding:5px 11px;border-radius:4px}
+.PASSED .badge{background:var(--pass-bg);color:var(--pass)}
+.WARNING .badge{background:var(--warn-bg);color:var(--warn)}
+.FAILED .badge{background:var(--fail-bg);color:var(--fail)}
+.UNREADABLE .badge,.ERROR .badge{background:var(--surface-2);color:var(--ink-2)}
+.when{font-size:17px;font-weight:600;letter-spacing:-.01em}
+.wdate{font-size:13px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.07em}
+.chead .sp{flex:1;min-width:6px}
+.pinof{font-size:12.5px;color:var(--ink-3)}
+.pinof b{color:var(--ink-2);font-weight:500}
+
+/* ---------- the frames ---------- */
+.evidence{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:17px 18px}
+@media (max-width:1080px){.evidence{grid-template-columns:1fr}}
+figure{margin:0;min-width:0}
+figcaption{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.09em;
+  color:var(--ink-3);margin-bottom:8px;display:flex;justify-content:space-between;
+  align-items:center;gap:10px}
+figcaption .hint{font-weight:400;letter-spacing:.02em;text-transform:none;font-size:11.5px}
+figure>img{width:100%;display:block;border-radius:6px;border:1px solid var(--rule);
+  background:var(--mat);cursor:zoom-in}
+
+/* ---------- 9. compare instrument ---------- */
+.cmp{position:relative;border-radius:6px;overflow:hidden;border:1px solid var(--rule);
+  background:var(--mat);user-select:none}
+.cmp img{display:block;width:100%}
+.cmp img.live{position:absolute;inset:0}.cmp .tagR{right:9px}
+
+.cbar{display:flex;align-items:center;gap:12px;margin-top:10px;flex-wrap:wrap}
+.modes{display:flex;border:1px solid var(--rule-2);border-radius:6px;overflow:hidden}
+.modes button{font-size:12px;font-weight:600;letter-spacing:.04em;padding:7px 15px;border:0;
+  border-right:1px solid var(--rule);background:var(--surface-2);color:var(--ink-2);cursor:pointer}
+.modes button:last-child{border-right:0}
+.modes button[aria-pressed=true]{background:var(--accent);color:#08252a}
+.modes button:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.sl{display:flex;align-items:center;gap:10px;flex:1;min-width:200px}
+.sl .lbl{font-size:10.5px}
+.sl input[type=range]{flex:1;height:6px;cursor:pointer;accent-color:var(--accent);min-width:80px}
+.sl.off{opacity:.3;pointer-events:none}
+.zoomb{font-size:12px;padding:7px 13px;border:1px solid var(--rule-2);border-radius:6px;
+  background:var(--surface-2);color:var(--ink-2);cursor:pointer}
+.zoomb:hover{border-color:var(--accent);color:var(--ink)}
+.zoomb:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+/* ---------- meters ---------- */
+.meters{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));
+  border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.m{padding:13px 18px;border-right:1px solid var(--rule)}
+.m:last-child{border-right:0}
+.m-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:5px}
+.m-v{font-size:19px;font-weight:600;letter-spacing:-.015em}
+.m-l{font-size:11px;color:var(--ink-3)}
+.bar{height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;position:relative}
+.bar span{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
+.m.ok .m-v{color:var(--ink)} .m.ok .bar span{background:var(--pass)}
+.m.near .m-v{color:var(--warn)} .m.near .bar span{background:var(--warn)}
+.m.over .m-v{color:var(--fail)} .m.over .bar span{background:var(--fail)}
+.m.na .m-v{color:var(--ink-3);font-size:17px}
+/* the plain-language line */
+.m-say{font-size:13px;color:var(--ink-2);margin-top:8px;line-height:1.4}
+.m.near .m-say{color:var(--warn)} .m.over .m-say{color:var(--fail)}
+.m.na .m-say{color:var(--ink-3)}
+.m-say code{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;
+  background:var(--surface-2);padding:1px 4px;border-radius:3px;color:var(--ink-2)}
+
+/* ---------- findings ---------- */
+.f{display:flex;gap:13px;padding:13px 18px;align-items:flex-start;
+  border-bottom:1px solid var(--rule)}
+.f:last-child{border-bottom:0}
+.f .sev{font-size:10.5px;font-weight:700;letter-spacing:.09em;padding:3px 8px;border-radius:3px;
+  white-space:nowrap;margin-top:2px}
+.f.warning .sev{background:var(--warn-bg);color:var(--warn)}
+.f.critical .sev{background:var(--fail-bg);color:var(--fail)}
+.f.info .sev{background:var(--surface-2);color:var(--ink-2)}
+.f .body{flex:1;font-size:14px;min-width:0}
+.f .subj{font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.08em;
+  margin-bottom:3px}
+.f .subj b{color:var(--ink-2);font-weight:600}
+.f .fix{display:block;font-size:13px;color:var(--ink-2);margin-top:5px}
+.f .fix::before{content:"→ ";color:var(--ink-3)}
+.f.none{color:var(--ink-3);font-size:13.5px}
+
+/* empty panels */
+.gap{padding:13px 18px}
+.gap .t{font-size:13.5px;color:var(--ink-2)}
+.gap .h{font-size:12.5px;color:var(--ink-3);margin-top:3px}
+.gap code{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;background:var(--surface-2);
+  padding:1px 5px;border-radius:3px;color:var(--ink-2)}
+figure.gapfig{border:1px dashed var(--rule-2);border-radius:6px;padding:22px;text-align:center;
+  display:flex;flex-direction:column;justify-content:center;min-height:150px}
+
+/* ---------- history ---------- */
+
+
+.hrow{display:flex;align-items:center;gap:14px;width:100%;text-align:left;
+  padding:11px 16px;background:var(--surface);border:1px solid var(--rule);
+  border-left:3px solid var(--rule-2);border-radius:6px;margin-bottom:5px;cursor:pointer;
+  color:var(--ink)}
+.hrow:hover{background:var(--surface-2);border-color:var(--rule-2)}
+.hrow:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.hrow.PASSED{border-left-color:var(--pass)}
+.hrow.WARNING{border-left-color:var(--warn)}
+.hrow.FAILED{border-left-color:var(--fail)}
+.hrow .caret{color:var(--ink-3);font-size:11px;width:10px;flex:none}
+.hrow .htime{font-size:13.5px;font-weight:600;width:96px;flex:none}
+.hrow .hverd{font-size:10.5px;font-weight:700;letter-spacing:.09em;width:78px;flex:none}
+.hrow.PASSED .hverd{color:var(--pass)}
+.hrow.WARNING .hverd{color:var(--warn)}
+.hrow.FAILED .hverd{color:var(--fail)}
+.hrow .hfind{font-size:12.5px;color:var(--ink-2);flex:1;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.hrow .hpin{font-size:11.5px;color:var(--ink-3);flex:none}
+@media (max-width:720px){.hrow .hpin{display:none}}
+.hopen{margin:6px 0 14px}
+.empty{padding:38px 22px;text-align:center;color:var(--ink-3);font-size:14px;
+  border:1px dashed var(--rule-2);border-radius:8px}
+.empty b{display:block;color:var(--ink-2);font-size:15px;margin-bottom:8px}
+.empty code{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;background:var(--surface-2);
+  padding:2px 7px;border-radius:3px;color:var(--ink)}
+
+/* zoom overlay */
+.ov{position:fixed;inset:0;z-index:100;background:rgba(4,6,9,.94);display:none;
+  align-items:center;justify-content:center;padding:26px}
+.ov.on{display:flex}
+.ov-in{max-width:1400px;width:100%;max-height:100%;display:flex;flex-direction:column;gap:12px}
+
+.ov-in img{max-height:76vh;object-fit:contain;width:100%}
+.ov-cl{position:absolute;top:16px;right:20px;font-size:13px;padding:8px 15px;
+  border:1px solid var(--rule-2);border-radius:6px;background:var(--surface);
+  color:var(--ink-2);cursor:pointer}
+.ov-cl:hover{color:var(--ink);border-color:var(--accent)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style></head><body>
+
+<header><div class="hbar">
+  <h1 class="brand">an<em>v</em>il <span>· scene control</span></h1>
+</div></header>
+
+<main id="app"></main>
+
+<div class="ov" id="ov" role="dialog" aria-modal="true" aria-label="Enlarged comparison">
+  <button type="button" class="ov-cl" onclick="closeOv()">Close ✕</button>
+  <div class="ov-in" id="ovIn"></div>
+</div>
+
+<script>
+const DATA = {{ checks | tojson }};
+const LATEST = DATA.length ? DATA[0].id : "";
+
+/* ============ helpers ============ */
+const esc = s => String(s == null ? "" : s)
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+const fdate = d => d.toLocaleDateString(undefined,
+  {weekday:'short', month:'short', day:'numeric', year:'numeric'});
+const ftime = d => d.toLocaleTimeString(undefined,
+  {hour:'numeric', minute:'2-digit'});
+
+/* findings of one component, for the meter sentences (4a) */
+const findOf = (c, comp) => (c.findings||[]).filter(f => (f.component||"") === comp);
+const ev = f => f.evidence || {};
+
+/* ---- what is actually off, in words ---- */
+function saySentence(kind, c, v, thr){
+  const band = (thr && thr > 0) ? (v/thr >= 1 ? 'over' : v/thr >= .6 ? 'near' : 'ok') : 'ok';
+
+  if (kind === 'lighting'){
+    const f = findOf(c,'lighting')[0];
+    if (f){
+      const e = ev(f);
+      const cct = e.color_temp_delta_k, lum = e.mean_luminance_delta;
+      if (cct != null && Math.abs(cct) > 500)
+        return cct < 0 ? "The scene is too warm." : "The scene is too cool.";
+      if (lum != null && Math.abs(lum) > 20)
+        return lum < 0 ? "The scene is darker than the reference."
+                       : "The scene is brighter than the reference.";
+      return "Lighting is too different from the reference.";
+    }
+    if (band === 'near') return "Lighting has shifted, but is still inside the limit.";
+    return "Lighting matches the reference.";
+  }
+
+  if (kind === 'scene'){
+    if (c.measures && c.measures.scene === false)
+      return "Colour only — install the <code>[full]</code> extra to compare content.";
+    if (band === 'over') return "The scene no longer matches what was pinned.";
+    if (band === 'near') return "The scene is starting to look different.";
+    return "The scene matches the reference.";
+  }
+
+  if (kind === 'pose'){
+    const f = findOf(c,'keypoints')[0] || findOf(c,'aruco')[0];
+    if (f || band === 'over') return "The camera has moved. Put it back, or re-pin.";
+    if (band === 'near') return "The camera has shifted slightly.";
+    return "The camera hasn't moved.";
+  }
+
+  if (kind === 'object'){
+    const moved = (c.findings||[]).filter(f => (f.issue||"") === 'position_drift');
+    const looks = (c.findings||[]).filter(f => (f.issue||"") === 'appearance_drift');
+    if (moved.length){
+      const names = moved.map(f => f.subject).filter(Boolean);
+      return names.length === 1
+        ? `The ${names[0]} is out of place.`
+        : `${names.length} tracked things are out of place.`;
+    }
+    if (looks.length > 1) return "Several tracked things don't look the same — usually lighting.";
+    if (looks.length === 1)
+      return `The ${looks[0].subject || 'tracked object'} doesn't look the same.`;
+    return "Nothing tracked has moved.";
+  }
+  return "";
+}
+
+/* ---- a panel that explains its own absence ---- */
+function gapMeter(label, title, hint){
+  return `<div class="m na">
+    <div class="m-h"><span class="lbl">${label}</span></div>
+    <div class="m-v mono">—</div>
+    <div class="m-say">${title}<br><span style="color:var(--ink-3)">${hint}</span></div>
+  </div>`;
+}
+
+function meter(kind, label, c, v, thr, dec, gap){
+  if (v === undefined || v === null) return gapMeter(label, gap.t, gap.h);
+  const has = thr != null && thr > 0;
+  const pct = has ? v/thr : 0;
+  const cls = !has ? 'ok' : pct >= 1 ? 'over' : pct >= .6 ? 'near' : 'ok';
+  return `<div class="m ${cls}">
+    <div class="m-h">
+      <span class="lbl">${label}</span>
+      ${has ? `<span class="m-l mono">${Math.round(pct*100)}% of limit</span>` : ''}
+    </div>
+    <div class="m-h" style="margin-bottom:7px">
+      <span class="m-v mono">${v.toFixed(dec)}</span>
+      ${has ? `<span class="m-l mono">limit ${thr}</span>` : ''}
+    </div>
+    <div class="bar"><span style="width:${Math.min(100, has ? pct*100 : 0)}%"></span></div>
+    <div class="m-say">${saySentence(kind, c, v, thr)}</div>
+  </div>`;
+}
+
+/* ---- the compare ---- */
+function compare(c, big){
+  const id = (big ? 'z-' : '') + c.id;
+  return `<figure>
+    <figcaption><span>Reference ↔ live</span></figcaption>
+    <div class="cmp" id="cmp-${esc(id)}" data-id="${esc(id)}">
+      <img src="${esc(c.reference)}" alt="reference frame">
+      <img class="live" src="${esc(c.frame)}" alt="live frame" style="opacity:.5">
+
+    </div>
+    <div class="cbar">
+      <div class="modes" role="group" aria-label="Compare mode">
+        <button type="button" data-m="fade"  aria-pressed="true">Fade</button>
+        <button type="button" data-m="blink" aria-pressed="false">Blink</button>
+      </div>
+      <div class="sl">
+        <span class="lbl">ref</span>
+        <input type="range" min="0" max="100" value="50" aria-label="Compare position">
+        <span class="lbl">live</span>
+      </div>
+      ${big ? '' : `<button type="button" class="zoomb" data-zoom="${esc(c.id)}">Enlarge ⤢</button>`}
+    </div></figure>`;
+}
+
+function card(c){
+  const s = c.scores || {}, t = c.thresholds || {};
+  const d = new Date(c.checked_at);
+
+  /* the frames come first */
+  const cmp = (c.reference && c.frame) ? compare(c, false)
+    : `<figure class="gapfig"><div class="gap"><div class="t">No comparison for this check.</div>
+       <div class="h">Both a reference and a live frame are needed.</div></div></figure>`;
+  const heat = c.heat
+    ? `<figure><figcaption><span>Difference heat map</span>
+         <span class="hint">glowing = changed</span></figcaption>
+       <img src="${esc(c.heat)}" alt="difference heat map" data-zoom-src="${esc(c.heat)}"></figure>`
+    : `<figure class="gapfig"><div class="gap"><div class="t">No difference image.</div>
+       <div class="h">Written alongside the check when a reference frame is
+       available.</div></div></figure>`;
+
+  /* meters, each able to explain its own absence (6) */
+  const meters =
+      meter('scene','scene drift', c, s.scene_drift, t.scene, 3,
+        {t:"Scene isn't being compared.", h:"Needs a pinned reference."})
+    + meter('lighting','lighting drift', c, s.lighting_drift, t.lighting, 3,
+        {t:"Lighting isn't being compared.", h:"Needs a pinned reference."})
+    + meter('pose','camera pose °', c,
+        (c.measures && c.measures.pose === false) ? null : s.max_camera_pose_drift_deg,
+        t.pose_deg, 3,
+        {t:"Camera pose isn't being checked.",
+         h:"Install the <code>[full]</code> extra, or add ArUco markers."})
+    + meter('object','object drift cm', c,
+        (c.findings||[]).some(f=>f.component==='object') || s.max_object_drift_cm
+          ? s.max_object_drift_cm : null,
+        null, 2,
+        {t:"No objects tracked.",
+         h:"Pin with <code>--object</code> to watch a specific thing."});
+
+  /* findings, in the operator's own words */
+  const finds = (c.findings||[]).length
+    ? c.findings.map(f => {
+        const sev = String(f.severity||'info').toLowerCase();
+        return `<div class="f ${sev}"><span class="sev">${esc(sev.toUpperCase())}</span>
+          <span class="body">
+            ${f.subject ? `<div class="subj"><b>${esc(f.subject)}</b></div>` : ''}
+            ${esc(f.detail||'')}
+            ${f.fix ? `<span class="fix">${esc(f.fix)}</span>` : ''}
+          </span></div>`;
+      }).join('')
+    : `<div class="f none">No findings — every layer inside its limit.</div>`;
+
+  const annot = c.diff
+    ? `<div style="padding:0 18px 18px"><figure>
+        <figcaption><span>Tracked objects</span>
+          <span class="hint">boxes and position against the pin</span></figcaption>
+        <img src="${esc(c.diff)}" alt="annotated object diff" data-zoom-src="${esc(c.diff)}"></figure></div>`
+    : '';
+
+  return `<article class="card ${esc(c.status)}">
+    <div class="chead">
+      <span class="badge">${c.status}</span>
+      <span class="when mono">${ftime(d)}</span>
+      <span class="wdate mono">${fdate(d)}</span>
+      <span class="sp"></span>
+      <span class="pinof">against <b class="mono">${esc(c.pin)}</b></span>
+    </div>
+    <div class="evidence">${cmp}${heat}</div>
+    <div class="meters">${meters}</div>
+    <div>${finds}</div>
+    ${annot}
+  </article>`;
+}
+
+/* ============ current check, then the rest collapsed ============ */
+const OPEN = new Set();
+
+function render(){
+  if (!DATA.length){
+    document.getElementById('app').innerHTML =
+      `<div class="empty"><b>No saved checks.</b>
+       A check compares what the camera sees now against a pinned reference.<br>
+       Keep one to look at here with
+       <code>anvil check --against &lt;pin&gt; --save</code>.</div>`;
+    return;
+  }
+
+  const cur = DATA[0];
+  const rest = DATA.slice(1);
+
+  let html = `<div class="srule"><h2>Current check</h2><div class="r"></div></div>`
+           + card(cur);
+
+  if (DATA.length > 1){
+    html += `<div class="srule"><h2>Earlier checks</h2><div class="r"></div>
+      <span class="n">${DATA.length - 1}</span></div>`;
+    {
+      rest.forEach(c => {
+        const dt = new Date(c.checked_at);
+        const n = (c.findings||[]).length;
+        if (OPEN.has(c.id)){
+          html += `<button type="button" class="hrow ${esc(c.status)}" data-t="${esc(c.id)}">
+              <span class="caret">▾</span><span class="htime mono">${ftime(dt)}</span>
+              <span class="hverd">${esc(c.status)}</span>
+              <span class="hfind">hide</span>
+              <span class="hpin mono">${esc(c.pin)}</span></button>
+            <div class="hopen">${card(c)}</div>`;
+        } else {
+          html += `<button type="button" class="hrow ${esc(c.status)}" data-t="${esc(c.id)}">
+            <span class="caret">▸</span><span class="htime mono">${ftime(dt)}</span>
+            <span class="hverd">${esc(c.status)}</span>
+            <span class="hfind">${n ? esc(c.findings[0].detail||'') : 'no findings'}</span>
+            <span class="hpin mono">${esc(c.pin)}</span></button>`;
+        }
+      });
+    }
+  }
+
+  document.getElementById('app').innerHTML = html;
+  wire();
+}
+
+/* ============ wiring ============ */
+function wireCompare(root){
+  root.querySelectorAll('.cmp').forEach(el => {
+    if (el.dataset.wired) return;
+    const fig    = el.closest('figure');
+    const live   = el.querySelector('img.live');
+    const range  = fig ? fig.querySelector('input[type=range]') : null;
+    if (!live || !range) return;              /* not a compare widget */
+    el.dataset.wired = "1";
+    const btns   = fig.querySelectorAll('.modes button');
+    const sl     = fig.querySelector('.sl');
+    let mode = 'fade', timer = null, pos = 50;
+
+    const apply = () => {
+      if (mode === 'fade') live.style.opacity = pos/100;
+      range.value = pos;
+    };
+    const setMode = m => {
+      mode = m;
+      btns.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.m === m)));
+      sl.classList.toggle('off', m === 'blink');
+      clearInterval(timer); timer = null;
+      if (m === 'blink'){
+        let on = true;
+        live.style.opacity = 1;
+        timer = setInterval(() => { on = !on; live.style.opacity = on ? 1 : 0; }, 850);
+      } else { apply(); }
+    };
+    btns.forEach(b => b.addEventListener('click',
+      e => { e.stopPropagation(); setMode(b.dataset.m); }));
+    range.addEventListener('input', () => { pos = +range.value; if (mode !== 'blink') apply(); });
+
+    apply();   /* the slider reads 50, so the image must start at 50 */
+
+    /* the slider under the image is the only way to move the seam */
+    range.addEventListener('keydown', e => {
+      const K = {'[':-50, ']':50};
+      if (e.key in K){
+        e.preventDefault();
+        pos = Math.max(0, Math.min(100, pos + K[e.key]));
+        apply();
+      }
+    });
+
+  });
+}
+
+function wire(){
+  const app = document.getElementById('app');
+  wireCompare(app);
+
+  app.querySelectorAll('.hrow').forEach(b => b.addEventListener('click', () => {
+    const id = b.dataset.t;
+    OPEN.has(id) ? OPEN.delete(id) : OPEN.add(id);
+    render();
+  }));
+
+  app.querySelectorAll('[data-zoom]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation(); openOv(b.dataset.zoom);
+  }));
+  app.querySelectorAll('[data-zoom-src]').forEach(im =>
+    im.addEventListener('click', () => openImg(im.dataset.zoomSrc, im.alt)));
+}
+
+/* zoom overlay */
+function openOv(id){
+  const c = DATA.find(x => x.id === id);
+  if (!c) return;
+  document.getElementById('ovIn').innerHTML = compare(c, true);
+  const ov = document.getElementById('ov');
+  ov.classList.add('on');
+  wireCompare(ov);
+}
+function openImg(src, alt){
+  document.getElementById('ovIn').innerHTML =
+    `<img src="${src}" alt="${esc(alt)}" style="border-radius:6px">`;
+  document.getElementById('ov').classList.add('on');
+}
+function closeOv(){
+  document.getElementById('ov').classList.remove('on');
+  document.getElementById('ovIn').innerHTML = '';
+}
+document.getElementById('ov').addEventListener('click', e => {
+  if (e.target.id === 'ov') closeOv();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeOv(); });
+
+render();
+setInterval(async () => {
+  try {
+    const r = await fetch('/api?latest=1');
+    const j = await r.json();
+    if (j.latest !== LATEST) location.reload();
+  } catch(e) {}
+}, 5000);
+</script></body></html>

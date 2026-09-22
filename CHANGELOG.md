@@ -6,6 +6,18 @@ All notable changes to Anvil are documented here. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- `check --save` / `guard --save` — keep a check under
+  `<pin>/checks/<timestamp>_<episode>/`: the `EpisodeReport`, the frame it was
+  taken from, a difference heat map against the reference, and the annotated
+  diff when one was rendered. Opt-in; without the flag `check` behaves exactly
+  as before.
+- `anvil viewer` — a read-only browser UI over those records (localhost:7788).
+  Newest check open, older ones collapsed. Each score is shown against the
+  pin's threshold with a plain-language reading, next to the reference and
+  live frames (fade / blink) and the heat map. A layer that did not run — no
+  keypoints or ArUco on a bare install — reports that instead of a confident
+  `0.00`. `anvil-inspect` shows how a pin was *configured*; this shows what
+  it *sees*.
 - Project scaffold: `uv`-managed `pyproject.toml`, src layout, ruff + mypy + pytest config.
 - `docs/metadata_schema.md` — v0.1 episode sidecar schema (the Forge contract).
 - `anvil.schema` — Pydantic v2 models for the sidecar, with Literal enums

@@ -88,6 +88,11 @@ anvil guard --against workspace \
 
 # 4. Browse pins, manifests, and diff history in a local browser tab.
 anvil-inspect            # localhost:7777, auto-opens the browser
+
+# 5. Keep a check and look at it: the two frames side by side, a heat map of
+#    what changed, and each score against the pin's threshold in plain words.
+anvil check --against workspace --save
+anvil viewer             # localhost:7788, auto-opens the browser
 ```
 
 **Sample `anvil pin` output:**
